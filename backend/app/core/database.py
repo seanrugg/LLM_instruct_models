@@ -2,8 +2,17 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 
+# Determine database driver based on URL
+if settings.DATABASE_URL.startswith("postgresql"):
+    DATABASE_URL = settings.DATABASE_URL
+elif settings.DATABASE_URL.startswith("mysql"):
+    # Convert mysql:// to aiomysql://
+    DATABASE_URL = settings.DATABASE_URL.replace("mysql://", "mysql+aiomysql://")
+else:
+    DATABASE_URL = settings.DATABASE_URL
+
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    DATABASE_URL,
     echo=settings.DEBUG
 )
 
