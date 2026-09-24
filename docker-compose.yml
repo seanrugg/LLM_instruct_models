@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+      - model_data:/app/models
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./llm_models.db
+      - JWT_SECRET_KEY=change-me-in-production
+      - MODEL_STORAGE_PATH=/app/models
+      - MAX_UPLOAD_SIZE_MB=50000
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    environment:
+      - VITE_API_URL=http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  model_data:
