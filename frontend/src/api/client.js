@@ -34,6 +34,7 @@ export default client
 export const authAPI = {
   register: (data) => client.post('/auth/register', data),
   login: (data) => client.post('/auth/login', data),
+  getConfig: () => client.get('/auth/config'),
 }
 
 // Model APIs
@@ -43,22 +44,17 @@ export const modelAPI = {
   create: (data) => client.post('/models', data),
   update: (id, data) => client.put(`/models/${id}`, data),
   delete: (id) => client.delete(`/models/${id}`),
-  upload: (id, file) => {
+  upload: (id, file, config = {}) => {
     const formData = new FormData()
     formData.append('file', file)
     return client.post(`/models/${id}/upload`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress: (progressEvent) => {
-        if (progressEvent.onProgress) {
-          progressEvent.onProgress(progressEvent)
-        }
-      },
+      timeout: 0, // No timeout for large file uploads
+      onUploadProgress: config.onUploadProgress, // Pass through caller's progress callback
     })
   },
-  download: (id) => {
-    const token = localStorage.getItem('token')
-    return `${API_BASE}/models/${id}/download?token=${token}`
-  },
+  generateDownloadToken: (id) => client.post(`/models/${id}/download-token`),
+  download: (id, token) => `${API_BASE}/models/${id}/download?token=${token}`,
   search: (q) => client.get('/models/search', { params: { q } }),
 }
 

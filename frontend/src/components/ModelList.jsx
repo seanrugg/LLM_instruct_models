@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { modelAPI } from '../api/client'
 
@@ -18,15 +18,12 @@ export function ModelList() {
   const [models, setModels] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [search, setSearch] = useState('')
+  const [query, setQuery] = useState('') // Uncommitted search query
+  const [search, setSearch] = useState('') // Committed search query
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
 
-  useEffect(() => {
-    loadModels()
-  }, [page, search])
-
-  const loadModels = async () => {
+  const loadModels = useCallback(async () => {
     setLoading(true)
     try {
       const params = { page, page_size: 12 }
@@ -39,12 +36,20 @@ export function ModelList() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [page, search])
+
+  useEffect(() => {
+    loadModels()
+  }, [loadModels])
 
   const handleSearch = (e) => {
     e.preventDefault()
+    setSearch(query) // Commit the query
     setPage(1)
-    loadModels()
+  }
+
+  const handleInputChange = (e) => {
+    setQuery(e.target.value)
   }
 
   const totalPages = Math.ceil(total / 12)
@@ -57,8 +62,8 @@ export function ModelList() {
             type="text"
             className="form-control"
             placeholder="Search models..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={query}
+            onChange={handleInputChange}
           />
           <button type="submit" className="btn btn-primary">Search</button>
         </form>

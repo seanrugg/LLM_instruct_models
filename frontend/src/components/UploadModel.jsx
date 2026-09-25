@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { modelAPI } from '../api/client'
 
@@ -17,6 +17,22 @@ export function UploadModel() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
   const navigate = useNavigate()
+
+  // Warn before leaving during upload
+  useEffect(() => {
+    if (!uploading) return
+
+    const handleBeforeUnload = (e) => {
+      e.preventDefault()
+      e.returnValue = ''
+      return ''
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [uploading])
 
   const handleMetadataSubmit = (e) => {
     e.preventDefault()
@@ -71,7 +87,14 @@ export function UploadModel() {
       setSuccess(true)
       setTimeout(() => navigate(`/model/${modelId}`), 2000)
     } catch (err) {
-      setError(err.response?.data?.detail || 'Upload failed')
+      // Show specific error messages
+      if (err.response?.status === 413) {
+        setError('File too large. Maximum size: ' + (err.response?.data?.detail || '50GB'))
+      } else if (err.response?.status === 400) {
+        setError('Upload failed: ' + (err.response?.data?.detail || 'Invalid file'))
+      } else {
+        setError(err.response?.data?.detail || 'Upload failed')
+      }
     } finally {
       setUploading(false)
     }
@@ -185,9 +208,6 @@ export function UploadModel() {
               ) : (
                 <div>
                   <p style={{ fontSize: '1.25rem', fontWeight: 500 }}>Click to select a file</p>
-                  <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-                    or drag and drop (coming soon)
-                  </p>
                   <p style={{ marginTop: '1rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
                     Allowed: .gguf, .pt, .pth, .safetensors, .onnx, .tar, .zip, .gz, .bin
                   </p>

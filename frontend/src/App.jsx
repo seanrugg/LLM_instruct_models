@@ -1,5 +1,7 @@
 import React from 'react'
 import { Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom'
+import { AuthProvider, useAuth } from './context/AuthContext'
+import { ProtectedRoute, PublicRoute } from './components/ProtectedRoute'
 import { Login, Register } from './components/Auth'
 import { ModelList } from './components/ModelList'
 import { ModelDetail } from './components/ModelDetail'
@@ -8,16 +10,12 @@ import { UploadModel } from './components/UploadModel'
 function Header() {
   const navigate = useNavigate()
   const location = useLocation()
-  const user = JSON.parse(localStorage.getItem('user') || 'null')
-  const token = localStorage.getItem('token')
+  const { user, allowRegistration, logout } = useAuth()
 
   const handleLogout = () => {
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
+    logout()
     navigate('/login')
   }
-
-  if (!token) return null
 
   return (
     <header className="header">
@@ -29,6 +27,11 @@ function Header() {
         <Link to="/upload" className={location.pathname === '/upload' ? 'active' : ''}>
           Upload
         </Link>
+        {!allowRegistration && (
+          <span style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+            Contact admin for account
+          </span>
+        )}
         {user && (
           <span style={{ color: 'var(--text-secondary)' }}>
             {user.username}
@@ -42,8 +45,8 @@ function Header() {
   )
 }
 
-function App() {
-  const token = localStorage.getItem('token')
+function AppContent() {
+  const { allowRegistration } = useAuth()
 
   return (
     <div>
@@ -52,27 +55,57 @@ function App() {
         <Routes>
           <Route
             path="/login"
-            element={token ? <ModelList /> : <Login />}
+            element={
+              <PublicRoute>
+                <Login />
+              </PublicRoute>
+            }
           />
-          <Route
-            path="/register"
-            element={!token ? <Register /> : <ModelList />}
-          />
+          {allowRegistration && (
+            <Route
+              path="/register"
+              element={
+                <PublicRoute>
+                  <Register />
+                </PublicRoute>
+              }
+            />
+          )}
           <Route
             path="/"
-            element={token ? <ModelList /> : <Login />}
+            element={
+              <ProtectedRoute>
+                <ModelList />
+              </ProtectedRoute>
+            }
           />
           <Route
             path="/upload"
-            element={token ? <UploadModel /> : <Login />}
+            element={
+              <ProtectedRoute>
+                <UploadModel />
+              </ProtectedRoute>
+            }
           />
           <Route
             path="/model/:id"
-            element={token ? <ModelDetail /> : <Login />}
+            element={
+              <ProtectedRoute>
+                <ModelDetail />
+              </ProtectedRoute>
+            }
           />
         </Routes>
       </main>
     </div>
+  )
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   )
 }
 

@@ -19,6 +19,7 @@ export function ModelDetail() {
   const [model, setModel] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [downloading, setDownloading] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -48,9 +49,23 @@ export function ModelDetail() {
     }
   }
 
-  const handleDownload = () => {
-    const url = modelAPI.download(id)
-    window.open(url, '_blank')
+  const handleDownload = async () => {
+    setDownloading(true)
+    setError('')
+
+    try {
+      // Generate download token
+      const tokenResponse = await modelAPI.generateDownloadToken(id)
+      const token = tokenResponse.data.download_token
+
+      // Download using token
+      const downloadUrl = modelAPI.download(id, token)
+      window.location.href = downloadUrl
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to generate download link')
+    } finally {
+      setDownloading(false)
+    }
   }
 
   if (loading) return <div style={{ textAlign: 'center', padding: '3rem' }}>Loading...</div>
@@ -67,8 +82,12 @@ export function ModelDetail() {
         <div className="card-header">
           <h2>{model.name}</h2>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button className="btn btn-success" onClick={handleDownload}>
-              Download
+            <button
+              className="btn btn-success"
+              onClick={handleDownload}
+              disabled={downloading}
+            >
+              {downloading ? 'Generating Link...' : 'Download'}
             </button>
             <button className="btn btn-danger" onClick={handleDelete}>
               Delete
