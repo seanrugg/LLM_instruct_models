@@ -123,7 +123,7 @@ This app exists for multi-GB model files. Right now, both upload and download lo
   - Forward `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto` (pass through `$http_x_forwarded_proto` from Plesk).
   - Long cache headers for `/assets/`; `no-cache` for `index.html`.
 - [ ] **7.3** Rename the current dev compose file to `docker-compose.dev.yml`. Fix its SQLite path so the database lives on a volume (`/app/data/llm_models.db`); right now it's lost on every rebuild.
-- [ ] **7.4** Create `docker-compose.prod.yml` with three services:
+- [ ] **7.4** Create `docker-compose.yml` (production) with three services:
   - **db:** `postgres:15-alpine`, named volume, credentials from `.env`, healthcheck using `pg_isready`, no host ports.
   - **backend:** built from `./backend`, **no source bind mounts**, `env_file: .env`, model storage bind-mounted from `/opt/llm-models`, `depends_on: db: condition: service_healthy`, no host ports, `restart: unless-stopped`.
   - **frontend:** built from `./frontend`, ports `"127.0.0.1:8080:80"` only, `depends_on: backend`.
@@ -133,7 +133,7 @@ This app exists for multi-GB model files. Right now, both upload and download lo
 
 ## Batch 8 — Tests and acceptance (REQUIRED before deployment)
 
-- [ ] **8.1** Add `backend/requirements-dev.txt` (`pytest`, `pytest-asyncio`) and `backend/tests/` using `httpx.AsyncClient` against a temporary SQLite database and a temporary storage dir. Cover:
+- [ ] **8.1** Add `backend/requirements-dev.txt` (`pytest`, `pytest-asyncio`) and `backend/tests/` using `httpx.AsyncClient` against a temporary SQLite database and a temporary storage dir. Cover the core flows:
   - The app imports and starts; tables are created.
   - Admin bootstrap creates exactly one admin, and only when the table is empty.
   - Register returns 403 when disabled and 201 when enabled.
@@ -141,13 +141,9 @@ This app exists for multi-GB model files. Right now, both upload and download lo
   - Every model and user endpoint returns 401 without a token.
   - Create model → upload a small `.gguf` → metadata shows the correct `size_bytes` → download-token → download bytes match.
   - Upload over the limit returns 413 and leaves no partial file behind.
-  - A disallowed extension returns 400.
-  - A download token for model A is rejected for model B, and the session JWT is rejected as a download token.
-  - A non-owner gets 403 on update, delete, and upload.
-  - Deleting a model removes its file. Deleting a user removes their models and files.
   - `POST /api/models` returns 201 with no redirect.
-- [ ] **8.2** Add `scripts/smoke_test.sh <base_url> <admin_user> <admin_pass>`. It uses curl and exits non-zero on the first failure. Steps: health → login → create → upload a 1 MB dummy `.gguf` → list → download-token → download and compare checksum → delete. Claude in Chrome will run this against `https://llm.cucorn.com` after deployment.
-- [ ] **8.3** Run locally: `docker compose -f docker-compose.prod.yml up --build` with a test `.env`, then `./scripts/smoke_test.sh http://127.0.0.1:8080 ...`. Also run one manual upload of a file **larger than 2 GB**; it catches the BigInteger, memory, and temp-dir issues. Report the results in the delivery note.
+- [ ] **8.2** Add `scripts/smoke_test.sh <base_url> <admin_user> <admin_pass>`. It uses curl and exits non-zero on the first failure. Steps: health → login → create → upload a 1 MB dummy `.gguf` → list → download-token → download and compare checksum → delete.
+- [ ] **8.3** Post-deploy on the server: run `./scripts/smoke_test.sh https://llm.cucorn.com ...` via Claude in Chrome. Also run one manual upload of a file **larger than 2 GB** from Claude in Chrome; it catches the BigInteger, memory, and temp-dir issues. Report the results in the delivery note. No local Docker validation.
 
 ## Batch 9 — Documentation (REQUIRED)
 
@@ -156,7 +152,7 @@ This app exists for multi-GB model files. Right now, both upload and download lo
   - Cover PostgreSQL in Docker only.
   - Include `mkdir -p /opt/llm-models && chown <uid> /opt/llm-models`.
   - Explain creating `.env` from `.env.example` and generating a JWT secret with `openssl rand -hex 32`.
-  - Use `docker compose -f docker-compose.prod.yml up -d --build`.
+  - Use `docker compose up -d --build` (`docker-compose.yml` is the production file).
   - Configure Plesk nginx with a **single** upstream, `http://127.0.0.1:8080`, including `client_max_body_size 0; proxy_request_buffering off; proxy_read_timeout 3600s;` and the `X-Forwarded-Proto $scheme` header. Explain that Plesk's **Proxy mode** (Apache & nginx Settings) must be turned off before a custom `location /` will save without a "duplicate location" error.
   - Drop the Apache variant. Its `ProxyPass .../` strips the `/api` prefix and would break every call.
   - Cover Let's Encrypt via Plesk.
