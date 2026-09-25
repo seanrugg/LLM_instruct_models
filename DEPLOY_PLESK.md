@@ -1,739 +1,270 @@
-# Plesk Deployment Guide
+# Deploy to Plesk (IONOS)
 
-## Overview
+Deploy the LLM Instruct Models Repository to `llm.cucorn.com` on Plesk.
 
-This guide walks you through deploying the LLM Instruct Models Repository on Plesk with IONOS hosting for the subdomain `llm.cucorn.com`.
+## Architecture
+
+```
+Internet → Plesk nginx (443) → proxy to http://127.0.0.1:8080
+                                 ├─ /api/* → frontend nginx → backend:8000
+                                 ├─ /docs, /openapi.json → backend:8000
+                                 └─ /* → frontend nginx (SPA fallback)
+
+Containers: llm-db (PostgreSQL 15), llm-backend (FastAPI), llm-frontend (nginx)
+User data: /opt/llm-models (bind-mounted, chown 10001:10001)
+UID/GID: 10001 (non-root backend)
+```
 
 ## Prerequisites
 
-- Plesk account with SSH access to your server
-- Domain: `cucorn.com`
-- Subdomain: `llm.cucorn.com` (already configured in Plesk)
-- SSH client (Terminal on macOS/Linux, PuTTY on Windows)
+- SSH access to your Plesk server
+- Domain: `cucorn.com`, subdomain: `llm.cucorn.com` (configured in Plesk)
+- Docker and Docker Compose on the server (Plesk Docker extension)
+- `openssl` for JWT secret generation
 
-## Step 1: Connect to Your Server via SSH
+## Step 1: Connect via SSH
 
 ```bash
 ssh your_username@llm.cucorn.com
 ```
 
-Replace `your_username` with your Plesk SSH username.
-
-## Step 2: Create Application Directory
+## Step 2: Create application directory
 
 ```bash
-# Navigate to web root or create dedicated directory
 cd /var/www/vhosts/cucorn.com/subdomains/llm
-
-# Or use Plesk's website root
-cd /var/www/vhosts/cucorn.com/httpdocs/llm
-
-# Create app directory
 mkdir -p llm-instruct-models
 cd llm-instruct-models
 ```
 
-## Step 3: Clone the Repository
+## Step 3: Prepare the model storage directory
 
 ```bash
-# If you have the code locally, upload via SFTP/SCP
-# Or clone from your git repository:
+# The backend container runs as UID/GID 10001 (non-root).
+# The bind mount on /opt/llm-models must be writable by that user.
+sudo mkdir -p /opt/llm-models
+sudo chown 10001:10001 /opt/llm-models
+sudo chmod 755 /opt/llm-models
+```
 
+## Step 4: Clone the repository
+
+```bash
 git clone https://github.com/yourusername/LLM_instruct_models.git .
 # Or if using private repo with SSH:
-git clone git@github.com:yourusername/LLM_instruct_models.git .
+# git clone git@github.com:yourusername/LLM_instruct_models.git .
 ```
 
-**Alternative:** Upload via Plesk File Manager or SFTP client (FileZilla, WinSCP)
-
-## Step 4: Install Docker on Plesk Server
-
-Plesk has a Docker extension. Install it via:
-
-**Via Plesk UI:**
-1. Login to Plesk
-2. Go to **Extensions** → **My Extensions**
-3. Search for **Docker**
-4. Click **Install**
-
-**Or via SSH:**
-```bash
-# Plesk typically has Docker pre-installed
-# Verify Docker is running:
-docker --version
-docker-compose --version
-
-# If not installed, follow Plesk Docker extension installation
-```
-
-## Step 5: Choose Your Database
-
-You have two database options in Plesk:
-
-### Option A: PostgreSQL (Recommended for Production)
-
-**Advantages:**
-- Better performance for complex queries
-- Better JSON support (used for model tags)
-- More robust for production workloads
-
-**Steps:**
-1. **Login to Plesk**
-2. **Go to:** Databases → Add Database
-3. **Fill in:**
-   - Database name: `llm_models`
-   - Database user: `llm_user` (or your preferred username)
-   - Password: (generate a strong password)
-4. **Click OK**
-5. **Note the database host** (usually `localhost` or a specific IP)
-
-### Option B: MySQL/MariaDB
-
-**Advantages:**
-- More familiar if you have MySQL experience
-- Good performance for this use case
-- Well-supported in Plesk
-
-**Steps:**
-1. **Login to Plesk**
-2. **Go to:** Databases → Add Database
-3. **Fill in:**
-   - Database name: `llm_models`
-   - Database user: `llm_user` (or your preferred username)
-   - Password: (generate a strong password)
-4. **Click OK**
-5. **Note the database host** (usually `localhost` or a specific IP)
-
----
-
-## Step 6: Configure Environment Variables
-
-Create a `.env` file in the root directory:
+## Step 5: Create `.env` from `.env.example`
 
 ```bash
-cd /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models
-
+cp .env.example .env
 nano .env
 ```
 
-### For PostgreSQL (Option A):
+Generate a secure JWT secret:
 
-```env
-# Backend Configuration
-DATABASE_URL=postgresql+asyncpg://llm_user:YOUR_PASSWORD@localhost:5432/llm_models
-JWT_SECRET_KEY=generate-a-secure-random-key-here
-MODEL_STORAGE_PATH=/opt/llm-models
-MAX_UPLOAD_SIZE_MB=50000
-DEBUG=false
-
-# CORS Configuration
-CORS_ORIGINS=https://llm.cucorn.com
-```
-
-### For MySQL/MariaDB (Option B):
-
-```env
-# Backend Configuration
-DATABASE_URL=mysql+aiomysql://llm_user:YOUR_PASSWORD@localhost:3306/llm_models
-JWT_SECRET_KEY=generate-a-secure-random-key-here
-MODEL_STORAGE_PATH=/opt/llm-models
-MAX_UPLOAD_SIZE_MB=50000
-DEBUG=false
-
-# CORS Configuration
-CORS_ORIGINS=https://llm.cucorn.com
-```
-
-**Generate a secure JWT secret:**
 ```bash
 openssl rand -hex 32
 ```
 
-Copy the output and paste it as `JWT_SECRET_KEY`.
+Paste the output as `JWT_SECRET_KEY`. The password in `DATABASE_URL` **must match** `DB_PASSWORD` (the POSTGRES_PASSWORD set on the db container).
 
-**Important:** Replace `YOUR_PASSWORD` with the actual database password you created in Plesk.
+Example `.env` (production):
 
-## Step 6: Configure Docker Compose for Production
+```env
+APP_NAME=LLM Instruct Models Repository
+APP_VERSION=0.2.0
+DEBUG=false
 
-Edit `docker-compose.yml`:
+DB_USER=llm_user
+DB_PASSWORD=your_strong_password_here
+DATABASE_URL=postgresql+asyncpg://llm_user:your_strong_password_here@db:5432/llm_models
+
+JWT_SECRET_KEY=your_64_char_hex_string_here
+JWT_ALGORITHM=HS256
+JWT_EXPIRE_MINUTES=60
+
+MODEL_STORAGE_PATH=/opt/llm-models
+MAX_UPLOAD_SIZE_MB=50000
+
+CORS_ORIGINS=https://llm.cucorn.com
+
+ALLOW_REGISTRATION=false
+
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=your_admin_password_here
+ADMIN_EMAIL=admin@cucorn.com
+
+DOWNLOAD_TOKEN_EXPIRE_MINUTES=5
+```
+
+**Important notes:**
+- `DB_PASSWORD` and the password in `DATABASE_URL` must be identical.
+- `DATABASE_URL` uses `host=db` (the Docker Compose service name), not `localhost`.
+- With `ALLOW_REGISTRATION=false`, the first admin is created from `ADMIN_*` vars at startup.
+- `JWT_SECRET_KEY` must be at least 32 characters. The app refuses to start with the default.
+
+## Step 6: Verify Docker Compose version
 
 ```bash
-nano docker-compose.yml
+docker compose version
+# Should output: Docker Compose version v2.x.x
 ```
 
-### For PostgreSQL (Option A):
-
-Replace with production-optimized configuration:
-
-```yaml
-version: '3.8'
-
-services:
-  backend:
-    build: ./backend
-    container_name: llm-backend
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./backend/app:/app/app
-      - model_data:/opt/llm-models
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://llm_user:YOUR_PASSWORD@db:5432/llm_models
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - MODEL_STORAGE_PATH=/opt/llm-models
-      - MAX_UPLOAD_SIZE_MB=50000
-      - CORS_ORIGINS=https://llm.cucorn.com
-    restart: unless-stopped
-    networks:
-      - llm-network
-    depends_on:
-      - db
-
-  db:
-    image: postgres:15-alpine
-    container_name: llm-db
-    environment:
-      - POSTGRES_DB=llm_models
-      - POSTGRES_USER=llm_user
-      - POSTGRES_PASSWORD=YOUR_PASSWORD
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    networks:
-      - llm-network
-    # Uncomment to expose database port (not recommended for production)
-    # ports:
-    #   - "5432:5432"
-
-  frontend:
-    build: ./frontend
-    container_name: llm-frontend
-    ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
-    environment:
-      - VITE_API_URL=https://llm.cucorn.com
-    depends_on:
-      - backend
-    restart: unless-stopped
-    networks:
-      - llm-network
-
-volumes:
-  model_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /opt/llm-models
-  postgres_data:
-    driver: local
-
-networks:
-  llm-network:
-    driver: bridge
+If you get `docker-compose` (hyphen), you have the legacy v1. Install the v2 plugin:
+```bash
+sudo apt-get install docker-compose-plugin
 ```
 
-**Important:** Replace `YOUR_PASSWORD` with your actual database password.
-
-### For MySQL/MariaDB (Option B):
-
-Replace with production-optimized configuration:
-
-```yaml
-version: '3.8'
-
-services:
-  backend:
-    build: ./backend
-    container_name: llm-backend
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./backend/app:/app/app
-      - model_data:/opt/llm-models
-    environment:
-      - DATABASE_URL=mysql+aiomysql://llm_user:YOUR_PASSWORD@db:3306/llm_models
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - MODEL_STORAGE_PATH=/opt/llm-models
-      - MAX_UPLOAD_SIZE_MB=50000
-      - CORS_ORIGINS=https://llm.cucorn.com
-    restart: unless-stopped
-    networks:
-      - llm-network
-    depends_on:
-      - db
-
-  db:
-    image: mysql:8.0
-    container_name: llm-db
-    environment:
-      - MYSQL_DATABASE=llm_models
-      - MYSQL_USER=llm_user
-      - MYSQL_PASSWORD=YOUR_PASSWORD
-      - MYSQL_ROOT_PASSWORD=YOUR_ROOT_PASSWORD
-    volumes:
-      - mysql_data:/var/lib/mysql
-    restart: unless-stopped
-    networks:
-      - llm-network
-    # Uncomment to expose database port (not recommended for production)
-    # ports:
-    #   - "3306:3306"
-
-  frontend:
-    build: ./frontend
-    container_name: llm-frontend
-    ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
-    environment:
-      - VITE_API_URL=https://llm.cucorn.com
-    depends_on:
-      - backend
-    restart: unless-stopped
-    networks:
-      - llm-network
-
-volumes:
-  model_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /opt/llm-models
-  mysql_data:
-    driver: local
-
-networks:
-  llm-network:
-    driver: bridge
-```
-
-**Important:** Replace `YOUR_PASSWORD` and `YOUR_ROOT_PASSWORD` with your actual passwords.
-
-**Note:** If you prefer to use the Plesk-managed database instead of a Docker container, you can use the database host provided by Plesk (usually `localhost` or a specific IP) and remove the `db` service from docker-compose.yml.
-
-## Step 7: Update Backend Requirements
-
-The backend needs database drivers. Update `backend/requirements.txt`:
+## Step 7: Build and start containers
 
 ```bash
-nano backend/requirements.txt
-```
-
-Add the appropriate database driver:
-
-### For PostgreSQL:
-```
-asyncpg==0.29.0
-```
-
-### For MySQL/MariaDB:
-```
-aiomysql==0.2.0
-pymysql==1.1.1
-```
-
-**Full requirements.txt for PostgreSQL:**
-```
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-sqlalchemy==2.0.35
-alembic==1.13.2
-pydantic==2.8.2
-pydantic-settings==2.4.0
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-multipart==0.0.9
-httpx==0.27.2
-aiosqlite==0.20.0
-asyncpg==0.29.0
-python-dotenv==1.0.1
-```
-
-**Full requirements.txt for MySQL:**
-```
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-sqlalchemy==2.0.35
-alembic==1.13.2
-pydantic==2.8.2
-pydantic-settings==2.4.0
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-multipart==0.0.9
-httpx==0.27.2
-aiosqlite==0.20.0
-aiomysql==0.2.0
-pymysql==1.1.1
-python-dotenv==1.0.1
-```
-
-## Step 8: Build and Start Containers
-
-```bash
-# Navigate to app directory
 cd /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models
-
-# Build and start containers
-docker-compose up -d --build
-
-# Check if containers are running
-docker-compose ps
-
-# View logs
-docker-compose logs -f
+docker compose up -d --build
 ```
 
-## Step 8: Configure Plesk Reverse Proxy
+Verify all three containers are healthy:
 
-### Option A: Using Plesk Nginx Reverse Proxy (Recommended)
+```bash
+docker compose ps
+# Expected: llm-db, llm-backend, llm-frontend all running (status: healthy/running)
+```
 
-1. **Login to Plesk**
-2. **Go to:** Domains → llm.cucorn.com → Web Hosting Settings
-3. **Scroll to "Additional Nginx Directives"**
-4. **Add the following:**
+Check backend logs for admin bootstrap confirmation:
+
+```bash
+docker compose logs backend | grep "Admin user created"
+```
+
+## Step 8: Configure Plesk nginx
+
+### 8.1 Turn off Proxy mode (required for custom location blocks)
+
+In Plesk UI: **Domains → llm.cucorn.com → Apache & Nginx Settings** → set **Proxy mode** to **Off**. Save. This is required; otherwise Plesk will reject a custom `location /` block with a "duplicate location" error.
+
+### 8.2 Add custom nginx directives
+
+In Plesk UI: **Domains → llm.cucorn.com → Apache & Nginx Settings → Additional Nginx Directives**:
 
 ```nginx
+client_max_body_size 0;
+proxy_request_buffering off;
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+
 location / {
-    proxy_pass http://127.0.0.1:5173;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection 'upgrade';
-    proxy_set_header Host $host;
-    proxy_cache_bypass $http_upgrade;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-
-location /api/ {
-    proxy_pass http://127.0.0.1:8000;
+    proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-
-    # Increase upload size limit
-    client_max_body_size 50G;
 }
 ```
 
-5. **Click OK/Apply**
+**Do NOT add** a `location /api/` block here — the frontend container already proxies `/api/` to the backend. Adding a second `/api/` block in Plesk nginx will conflict.
 
-### Option B: Using Apache (if not using Nginx)
+Click **Apply** or **Save**.
 
-1. **Go to:** Domains → llm.cucorn.com → Apache & Nginx Settings
-2. **Add to Additional Apache Directives:**
+### 8.3 Do NOT use the Apache variant
 
-```apache
-<Location />
-    ProxyPass http://127.0.0.1:5173/
-    ProxyPassReverse http://127.0.0.1:5173/
-</Location>
+Apache's `ProxyPass /api/ ...` strips the `/api` prefix and breaks every API call. Nginx only.
 
-<Location /api/>
-    ProxyPass http://127.0.0.1:8000/
-    ProxyPassReverse http://127.0.0.1:8000/
-    LimitRequestBody 53687091200
-</Location>
-```
+## Step 9: Let's Encrypt SSL
 
-## Step 9: Configure SSL Certificate
+In Plesk UI: **Domains → llm.cucorn.com → SSL/TLS Certificates → Add Let's Encrypt Certificate**:
 
-### Using Let's Encrypt (Automatic)
+- Domain: `llm.cucorn.com`
+- SSL/TLS Streaming: **On**
+- Auto-renew: **Enabled**
 
-1. **Login to Plesk**
-2. **Go to:** Domains → llm.cucorn.com → SSL/TLS Certificates
-3. **Click "Add Let's Encrypt Certificate"**
-4. **Fill in:**
-   - Domain: `llm.cucorn.com`
-   - SSL/TLS Streaming: On
-   - Auto-renew: Enabled
-5. **Click OK**
+Click **OK**. Plesk obtains and installs the certificate automatically.
 
-Plesk will automatically obtain and install the certificate.
-
-### Alternative: Use Existing Certificate
-
-If you have an existing certificate for `cucorn.com`, you can use it for the subdomain (if it's a wildcard cert).
-
-## Step 10: Configure Firewall
-
-Ensure ports are accessible (Plesk typically handles this):
-
-- **Port 80** (HTTP) - Already open
-- **Port 443** (HTTPS) - Already open
-- **Port 8000** (Backend) - Only accessible locally (127.0.0.1)
-- **Port 5173** (Frontend) - Only accessible locally (127.0.0.1)
-
-**Verify with:**
-```bash
-# Check if ports are listening
-ss -tlnp | grep -E '8000|5173'
-
-# Should show:
-# LISTEN  0  128  127.0.0.1:8000  0.0.0.0:*  users:(("docker-proxy",pid=...,fd=*))
-# LISTEN  0  128  127.0.0.1:5173  0.0.0.0:*  users:(("docker-proxy",pid=...,fd=*))
-```
-
-## Step 11: Initialize Database (First Time Only)
-
-The application needs to create the database schema on first run.
-
-### Option A: Using Docker Container
-
-```bash
-# Enter the backend container
-docker exec -it llm-backend bash
-
-# Inside the container, run the application once to initialize
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-# You should see tables being created in the logs
-# Press Ctrl+C to stop after initialization
-```
-
-### Option B: Manual Database Setup (PostgreSQL)
-
-If you want to manually verify the database:
-
-```bash
-# Connect to PostgreSQL
-docker exec -it llm-db psql -U llm_user -d llm_models
-
-# Inside psql, verify tables exist:
-\dt
-
-# Should see:
-# public.models
-# public.users
-```
-
-### Option B: Manual Database Setup (MySQL)
-
-```bash
-# Connect to MySQL
-docker exec -it llm-db mysql -u llm_user -p llm_models
-
-# Inside MySQL, verify tables exist:
-SHOW TABLES;
-
-# Should see:
-# models
-# users
-```
-
-## Step 12: Set Up Database Backup (Optional)
-
-### Backup SQLite Database
-
-```bash
-# Create backup script
-nano /opt/llm-backup.sh
-```
-
-Add:
-```bash
-#!/bin/bash
-BACKUP_DIR="/opt/backups/llm"
-DATE=$(date +%Y%m%d_%H%M%S)
-mkdir -p $BACKUP_DIR
-
-# Backup database
-cp /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models/backend/llm_models.db $BACKUP_DIR/llm_models_$DATE.db
-
-# Backup models (if needed)
-# tar -czf $BACKUP_DIR/models_$DATE.tar.gz /opt/llm-models/
-
-# Keep only last 7 days of backups
-find $BACKUP_DIR -name "*.db" -mtime +7 -delete
-
-echo "Backup completed: $DATE"
-```
-
-Make executable and add to cron:
-```bash
-chmod +x /opt/llm-backup.sh
-
-# Add to crontab (daily at 2 AM)
-crontab -e
-# Add line:
-0 2 * * * /opt/llm-backup.sh >> /var/log/llm-backup.log 2>&1
-```
-
-## Step 13: Monitor and Maintain
-
-### View Logs
-
-```bash
-# Backend logs
-docker-compose -f /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models/docker-compose.yml logs -f backend
-
-# Frontend logs
-docker-compose -f /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models/docker-compose.yml logs -f frontend
-```
-
-### Update Application
+## Step 10: Run the smoke test
 
 ```bash
 cd /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models
-
-# Pull latest changes
-git pull
-
-# Rebuild and restart
-docker-compose up -d --build
+./scripts/smoke_test.sh https://llm.cucorn.com admin your_admin_password_here
 ```
 
-### Restart Services
+Expected: all steps pass. If any step fails, the script exits non-zero with the failure details.
+
+## Step 11: Upload a large file (validation)
+
+In Chrome on `https://llm.cucorn.com`, upload a file **larger than 2 GB**. This catches:
+- BigInteger serialization (PostgreSQL `BIGINT`)
+- Memory pressure during streaming upload
+- Temp-dir permissions on `/opt/llm-models/.tmp`
+
+## Step 12: Backup
+
+### Database (PostgreSQL)
 
 ```bash
-# Restart all services
-docker-compose restart
+# One-time backup
+docker exec llm-db pg_dump -U llm_user llm_models > /opt/backups/llm-db-$(date +%Y%m%d).sql
 
-# Restart only backend
-docker-compose restart backend
+# Daily via cron (add with `crontab -e`)
+0 2 * * * docker exec llm-db pg_dump -U llm_user llm_models > /opt/backups/llm-db-$(date +\%Y\%m\%d).sql
+```
 
-# Restart only frontend
-docker-compose restart frontend
+### Model files
+
+```bash
+# Back up /opt/llm-models (the bind mount on the host)
+tar -czf /opt/backups/llm-models-$(date +%Y%m%d).tar.gz -C / opt/llm-models
 ```
 
 ## Troubleshooting
 
-### Frontend Not Loading
+### 413 Payload Too Large
 
-**Check if frontend container is running:**
+Plesk or nginx body size limit. Verify:
+1. Plesk Additional Nginx Directives has `client_max_body_size 0;`
+2. No competing `client_max_body_size` in Plesk's default config
+3. Container nginx.conf has `client_max_body_size 0;` in `/api/`
+
+### 502 Bad Gateway
+
+Backend not healthy. Check:
 ```bash
-docker-compose ps
+docker compose logs backend
+docker compose ps
+curl http://127.0.0.1:8080/health
 ```
 
-**Check frontend logs:**
+If backend is down: `docker compose restart backend`.
+
+### Mixed Content Errors
+
+Ensure `CORS_ORIGINS` in `.env` is `https://llm.cucorn.com` (with https). Ensure Plesk redirects HTTP → HTTPS.
+
+### Frontend needs restart after backend restart
+
+nginx caches the backend container IP. If the backend container restarts (e.g., after a deploy), the frontend nginx may still point at the old IP. Fix:
+
 ```bash
-docker-compose logs frontend
+# Restart frontend to refresh DNS resolution
+docker compose restart frontend
 ```
 
-**Verify Nginx/Apache configuration:**
+Or restart both:
 ```bash
-# Test Nginx config
-nginx -t
-
-# Reload Nginx
-systemctl reload nginx
+docker compose restart frontend backend
 ```
 
-### Backend API Not Responding
+### Tables not created / admin not bootstrapped
 
-**Check if backend container is running:**
+The app creates tables and the admin user on first startup automatically. If they're missing:
 ```bash
-docker-compose ps
+docker compose logs backend | grep -E "Admin user created|Tables created"
 ```
 
-**Check backend logs:**
-```bash
-docker-compose logs backend
-```
+If still missing, check that `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set in `.env` and that `ALLOW_REGISTRATION=false`.
 
-**Verify CORS configuration in `.env`:**
-```env
-CORS_ORIGINS=https://llm.cucorn.com
-```
+## Immutable Decisions (from PRE_DEPLOY_TASKS.md)
 
-### SSL Certificate Issues
-
-**Check certificate status:**
-```bash
-# In Plesk UI: Domains → llm.cucorn.com → SSL/TLS Certificates
-```
-
-**Renew certificate:**
-```bash
-# Via Plesk UI or command line
-plesk cert --renew llm.cucorn.com
-```
-
-### Permission Issues
-
-**Fix file permissions:**
-```bash
-# Navigate to app directory
-cd /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models
-
-# Fix permissions
-chown -R www-data:www-data .
-chmod -R 755 .
-```
-
-### Disk Space Issues
-
-**Check disk usage:**
-```bash
-df -h
-
-# Check Docker disk usage
-docker system df
-```
-
-**Clean up unused Docker resources:**
-```bash
-docker system prune -a
-```
-
-## Security Checklist
-
-- [x] SSL certificate installed (HTTPS)
-- [x] JWT secret key changed from default
-- [x] Strong passwords for all accounts
-- [x] Firewall configured (only ports 80, 443 open externally)
-- [x] Regular backups configured
-- [x] Application logs monitored
-- [ ] Rate limiting implemented (consider adding)
-- [ ] File upload size limits enforced
-- [ ] Database backed up regularly
-
-## Performance Optimization (Optional)
-
-### Enable Gzip Compression
-
-In Plesk → llm.cucorn.com → Apache & Nginx Settings → Additional Nginx Directives:
-
-```nginx
-gzip on;
-gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
-gzip_min_length 1000;
-```
-
-### Enable Caching
-
-```nginx
-location ~* \.(jpg|jpeg|png|gif|ico|css|js|woff|woff2|ttf|svg)$ {
-    expires 30d;
-    add_header Cache-Control "public, immutable";
-}
-```
-
-## Support & Resources
-
-- **Plesk Documentation:** https://docs.plesk.com/
-- **Docker Documentation:** https://docs.docker.com/
-- **FastAPI Documentation:** https://fastapi.tiangolo.com/
-- **Let's Encrypt:** https://letsencrypt.org/
-
-## Next Steps
-
-1. Test the application thoroughly
-2. Set up monitoring (optional)
-3. Configure email notifications for backups
-4. Consider adding API rate limiting
-5. Plan for database migration to PostgreSQL if needed
-
-## Contact
-
-For Plesk support: https://www.plesk.com/support/
-For IONOS support: https://www.ionos.com/help/
+- **D1**: PostgreSQL in Docker only. No MySQL/MariaDB, no Plesk-managed DB.
+- **D2**: JWT HTTPBearer auth. Admin bootstrap from env vars.
+- **D3**: Registration gate controlled by `ALLOW_REGISTRATION`.
+- **D5**: Download tokens (short-lived, model-scoped JWTs), not session JWTs in URLs.
