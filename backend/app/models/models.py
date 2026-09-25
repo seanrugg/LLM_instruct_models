@@ -14,7 +14,10 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
 
     # Relationship
     models: Mapped[list["Model"]] = relationship("Model", back_populates="owner", cascade="all, delete-orphan")
@@ -34,11 +37,14 @@ class Model(Base):
     filename: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     original_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc)
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
     # Relationship

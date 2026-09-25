@@ -13,6 +13,8 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./llm_models.db"
+    DB_USER: Optional[str] = None
+    DB_PASSWORD: Optional[str] = None
 
     # JWT
     JWT_SECRET_KEY: str = "change-me-in-production-use-openssl-rand-hex-32"
@@ -46,13 +48,10 @@ class Settings(BaseSettings):
         ".tar", ".zip", ".gz", ".bin"
     ]
 
-    @field_validator("CORS_ORIGINS", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, v: str) -> list[str]:
-        """Parse comma-separated CORS origins into a list."""
-        if isinstance(v, list):
-            return v
-        return [origin.strip() for origin in v.split(",") if origin.strip()]
+    # NOTE: CORS_ORIGINS is kept as a string.  FastAPI's allow_origins
+    # accepts both str and list, so the caller handles the format.
+    # pydantic-settings parses CSV before validators run, making a
+    # string-typed validator receive a list — removing it avoids that trap.
 
     @field_validator("UPLOAD_TMP_DIR", mode="before")
     @classmethod
