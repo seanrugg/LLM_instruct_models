@@ -8,24 +8,21 @@ from app.models.models import User, Model
 from app.schemas import ModelCreate, ModelUpdate, ModelResponse, ModelListResponse, SearchResponse
 from app.storage.storage import storage
 from app.core.config import settings
+from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/models", tags=["models"])
 
 
-def get_current_user(current_user_id: uuid.UUID = Depends(lambda: None)):
-    """Dependency to get current user from JWT token."""
-    return current_user_id
-
-
-@router.get("/", response_model=ModelListResponse)
+@router.get("", response_model=ModelListResponse)
 async def list_models(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
     framework: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List all models with pagination."""
+    """List all models with pagination (auth required)."""
     # Build query
     query = select(Model)
     count_query = select(func.count(Model.id))
@@ -63,9 +60,10 @@ async def list_models(
 @router.get("/search", response_model=SearchResponse)
 async def search_models(
     q: str = Query(..., min_length=1),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Search models by name or description."""
+    """Search models by name or description (auth required)."""
     query = select(Model).where(
         or_(
             Model.name.ilike(f"%{q}%"),
@@ -83,8 +81,12 @@ async def search_models(
 
 
 @router.get("/{model_id}", response_model=ModelResponse)
-async def get_model(model_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Get model details."""
+async def get_model(
+    model_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get model details (auth required)."""
     result = await db.execute(select(Model).where(Model.id == model_id))
     model = result.scalar_one_or_none()
 
@@ -97,15 +99,15 @@ async def get_model(model_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return model
 
 
-@router.post("/", response_model=ModelResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ModelResponse, status_code=status.HTTP_201_CREATED)
 async def create_model(
     model_data: ModelCreate,
-    current_user_id: uuid.UUID = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new model entry."""
     new_model = Model(
-        owner_id=current_user_id,
+        owner_id=current_user.id,
         name=model_data.name,
         description=model_data.description,
         version=model_data.version,
@@ -124,7 +126,7 @@ async def create_model(
 async def update_model(
     model_id: uuid.UUID,
     model_data: ModelUpdate,
-    current_user_id: uuid.UUID = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Update model metadata."""
@@ -137,7 +139,7 @@ async def update_model(
             detail="Model not found"
         )
 
-    if model.owner_id != current_user_id:
+    if model.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this model"
@@ -157,7 +159,7 @@ async def update_model(
 @router.delete("/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_model(
     model_id: uuid.UUID,
-    current_user_id: uuid.UUID = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Delete a model and its files."""
@@ -170,7 +172,7 @@ async def delete_model(
             detail="Model not found"
         )
 
-    if model.owner_id != current_user_id:
+    if model.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to delete this model"
@@ -191,7 +193,7 @@ async def delete_model(
 async def upload_model_file(
     model_id: uuid.UUID,
     file: UploadFile = File(...),
-    current_user_id: uuid.UUID = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Upload a model file."""
@@ -205,7 +207,7 @@ async def upload_model_file(
             detail="Model not found"
         )
 
-    if model.owner_id != current_user_id:
+    if model.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to upload to this model"
@@ -231,7 +233,7 @@ async def upload_model_file(
 
     # Save file
     stored_filename = storage.save_file(
-        str(current_user_id),
+        str(current_user.id),
         str(model_id),
         file.filename,
         file_data
@@ -254,7 +256,7 @@ async def upload_model_file(
 @router.get("/{model_id}/download")
 async def download_model_file(
     model_id: uuid.UUID,
-    current_user_id: uuid.UUID = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Download a model file."""

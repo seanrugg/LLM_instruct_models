@@ -2,8 +2,11 @@ from contextlib import asynccontextmanager
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select, func
 from app.core.config import settings
-from app.core.database import init_db
+from app.core.database import init_db, get_db
+from app.core.security import get_password_hash
+from app.models.models import User
 from app.api import auth_router, models_router, users_router
 
 logger = logging.getLogger(__name__)
@@ -32,12 +35,47 @@ def validate_jwt_secret():
     logger.info("JWT_SECRET_KEY validation passed")
 
 
+async def bootstrap_admin_user():
+    """Create admin user on startup if users table is empty and ADMIN_* vars are set."""
+    # Import db session here to avoid circular imports
+    from app.core.database import async_session
+
+    async with async_session() as db:
+        # Check if users table is empty
+        result = await db.execute(select(func.count(User.id)))
+        user_count = result.scalar()
+
+        if user_count > 0:
+            logger.info("Users table not empty, skipping admin bootstrap")
+            return
+
+        # Check if admin vars are set
+        if not (settings.ADMIN_USERNAME and settings.ADMIN_PASSWORD):
+            logger.warning(
+                "WARNING: Users table is empty and ADMIN_USERNAME/ADMIN_PASSWORD are not set. "
+                "No admin user will be created. Use POST /api/users (admin only) to create the first user."
+            )
+            return
+
+        # Create admin user
+        admin_user = User(
+            username=settings.ADMIN_USERNAME,
+            email=settings.ADMIN_EMAIL,
+            password_hash=get_password_hash(settings.ADMIN_PASSWORD),
+            is_admin=True
+        )
+        db.add(admin_user)
+        await db.commit()
+        logger.info(f"Admin user '{settings.ADMIN_USERNAME}' created successfully")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     validate_jwt_secret()
     await init_db()
+    await bootstrap_admin_user()
     yield
     # Shutdown
     # Cleanup if needed

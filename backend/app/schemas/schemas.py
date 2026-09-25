@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 # Auth Schemas
@@ -26,10 +26,22 @@ class UserResponse(BaseModel):
     id: uuid.UUID
     username: str
     email: Optional[str] = None
+    is_admin: bool = False
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class UserCreate(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+    email: Optional[str] = None
+    password: str = Field(..., min_length=6)
+    is_admin: bool = False
+
+
+class AuthConfigResponse(BaseModel):
+    allow_registration: bool
 
 
 # Model Schemas
