@@ -42,3 +42,39 @@ def decode_access_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+
+def create_download_token(user_id: str, model_id: str) -> str:
+    """Create a short-lived download token."""
+    from datetime import datetime, timezone, timedelta
+
+    to_encode = {
+        "sub": user_id,
+        "mid": str(model_id),
+        "typ": "download",
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.DOWNLOAD_TOKEN_EXPIRE_MINUTES)
+    }
+    encoded_jwt = jwt.encode(
+        to_encode,
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+    return encoded_jwt
+
+
+def decode_download_token(token: str) -> Optional[dict]:
+    """Decode and validate a download token."""
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM]
+        )
+        # Validate token type and model ID
+        if payload.get("typ") != "download":
+            return None
+        if "mid" not in payload:
+            return None
+        return payload
+    except JWTError:
+        return None
