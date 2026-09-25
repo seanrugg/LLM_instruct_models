@@ -13,7 +13,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-llm_user}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-llm_user} -d llm_models"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,6 +25,8 @@ services:
     build: ./backend
     container_name: llm-backend
     env_file: .env
+    environment:
+      - TMPDIR=/opt/llm-models/.tmp
     volumes:
       - model_data:/opt/llm-models
     depends_on:

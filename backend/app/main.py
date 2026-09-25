@@ -12,6 +12,14 @@ from app.api import auth_router, models_router, users_router
 logger = logging.getLogger(__name__)
 
 
+async def ensure_tmp_dir():
+    """Ensure the upload temp directory exists on the model volume."""
+    import os
+    tmp_dir = settings.UPLOAD_TMP_DIR or f"{settings.MODEL_STORAGE_PATH}/.tmp"
+    os.makedirs(tmp_dir, exist_ok=True)
+    logger.info(f"Upload temp directory ready: {tmp_dir}")
+
+
 def validate_jwt_secret():
     """Validate JWT_SECRET_KEY is secure in production."""
     if settings.DEBUG:
@@ -74,6 +82,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     validate_jwt_secret()
+    await ensure_tmp_dir()
     await init_db()
     await bootstrap_admin_user()
     yield
