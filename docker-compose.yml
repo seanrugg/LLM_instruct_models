@@ -1,32 +1,60 @@
-version: '3.8'
+# Production Docker Compose
+# Usage: docker compose up -d --build
+# Requires .env file with DATABASE_URL, JWT_SECRET_KEY, etc.
 
 services:
+  db:
+    image: postgres:15-alpine
+    container_name: llm-db
+    environment:
+      - POSTGRES_DB=llm_models
+      - POSTGRES_USER=${DB_USER:-llm_user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-llm_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - llm-network
+
   backend:
     build: ./backend
-    ports:
-      - "8000:8000"
+    container_name: llm-backend
+    env_file: .env
     volumes:
-      - ./backend/app:/app/app
-      - model_data:/app/models
-    environment:
-      - DATABASE_URL=sqlite+aiosqlite:///./llm_models.db
-      - JWT_SECRET_KEY=change-me-in-production
-      - MODEL_STORAGE_PATH=/app/models
-      - MAX_UPLOAD_SIZE_MB=50000
+      - model_data:/opt/llm-models
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+    networks:
+      - llm-network
 
   frontend:
     build: ./frontend
+    container_name: llm-frontend
     ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
-    environment:
-      - VITE_API_URL=http://backend:8000
+      - "127.0.0.1:8080:80"
     depends_on:
       - backend
     restart: unless-stopped
+    networks:
+      - llm-network
 
 volumes:
+  postgres_data:
+    driver: local
   model_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/llm-models
+
+networks:
+  llm-network:
+    driver: bridge

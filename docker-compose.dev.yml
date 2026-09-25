@@ -1,0 +1,70 @@
+# Development Docker Compose
+# Usage: docker compose -f docker-compose.dev.yml up -d
+# Starts PostgreSQL, backend (with hot-reload), and Vite dev server
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: llm-db-dev
+    environment:
+      - POSTGRES_DB=llm_models
+      - POSTGRES_USER=llm_user
+      - POSTGRES_PASSWORD=llm_password
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - llm-network
+
+  backend:
+    build: ./backend
+    container_name: llm-backend-dev
+    volumes:
+      - ./backend/app:/app/app
+      - model_data:/opt/llm-models
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://llm_user:llm_password@db:5432/llm_models
+      - UPLOAD_TMP_DIR=/app/app/tmp_uploads
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - llm-network
+
+  frontend:
+    image: node:20-alpine
+    container_name: llm-frontend-dev
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - llm-network
+
+volumes:
+  postgres_data_dev:
+  model_data:
+    driver: local
+
+networks:
+  llm-network:
+    driver: bridge
