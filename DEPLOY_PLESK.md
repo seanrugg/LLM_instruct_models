@@ -17,9 +17,9 @@ UID/GID: 10001 (non-root backend)
 
 ## Prerequisites
 
-- SSH access to your Plesk server
+- SSH access to your Plesk server (requires `root` or `sudo` for some steps)
 - Domain: `cucorn.com`, subdomain: `llm.cucorn.com` (configured in Plesk)
-- Docker and Docker Compose on the server (Plesk Docker extension)
+- Docker and Docker Compose v2 on the server (Plesk Docker extension)
 - `openssl` for JWT secret generation
 
 ## Step 1: Connect via SSH
@@ -30,9 +30,12 @@ ssh your_username@llm.cucorn.com
 
 ## Step 2: Create application directory
 
+Install to `/opt/llm-instruct-models` (keeps `.env` out of the web root):
+
 ```bash
-cd /var/www/vhosts/cucorn.com/subdomains/llm
-mkdir -p llm-instruct-models
+sudo mkdir -p /opt
+cd /opt
+git clone https://github.com/seanrugg/LLM_instruct_models.git llm-instruct-models
 cd llm-instruct-models
 ```
 
@@ -49,9 +52,9 @@ sudo chmod 755 /opt/llm-models
 ## Step 4: Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/LLM_instruct_models.git .
+git clone https://github.com/seanrugg/LLM_instruct_models.git .
 # Or if using private repo with SSH:
-# git clone git@github.com:yourusername/LLM_instruct_models.git .
+# git clone git@github.com:seanrugg/LLM_instruct_models.git .
 ```
 
 ## Step 5: Create `.env` from `.env.example`
@@ -119,7 +122,7 @@ sudo apt-get install docker-compose-plugin
 ## Step 7: Build and start containers
 
 ```bash
-cd /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models
+cd /opt/llm-instruct-models
 docker compose up -d --build
 ```
 
@@ -134,6 +137,13 @@ Check backend logs for admin bootstrap confirmation:
 
 ```bash
 docker compose logs backend | grep "Admin user created"
+```
+
+### Fix file permissions (if needed)
+
+```bash
+sudo chown -R 10001:10001 /opt/llm-instruct-models
+```
 ```
 
 ## Step 8: Configure Plesk nginx
@@ -180,10 +190,14 @@ In Plesk UI: **Domains → llm.cucorn.com → SSL/TLS Certificates → Add Let's
 
 Click **OK**. Plesk obtains and installs the certificate automatically.
 
+### Enable HTTP → HTTPS redirect
+
+After adding Let's Encrypt, in Plesk UI: **Domains → llm.cucorn.com → Hosting Settings** → enable **Permanent SEO-safe 301 redirect from HTTP to HTTPS**.
+
 ## Step 10: Run the smoke test
 
 ```bash
-cd /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models
+cd /opt/llm-instruct-models
 ./scripts/smoke_test.sh https://llm.cucorn.com admin your_admin_password_here
 ```
 

@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Docker and Docker Compose v2 on the server
-- SSH access to the server
+- SSH access to the server (requires `root` or `sudo` for some steps)
 - Domain with subdomain configured (e.g., `llm.cucorn.com`)
 
 ## Production Setup (Plesk/IONOS)
@@ -12,10 +12,10 @@
 
 ```bash
 ssh your_username@llm.cucorn.com
-cd /var/www/vhosts/cucorn.com/subdomains/llm
-mkdir -p llm-instruct-models
+sudo mkdir -p /opt
+cd /opt
+git clone https://github.com/seanrugg/LLM_instruct_models.git llm-instruct-models
 cd llm-instruct-models
-git clone <your-repo-url> .
 ```
 
 ### 2. Prepare Model Storage
@@ -185,7 +185,7 @@ sudo chmod 755 /opt/llm-models
 ## Update Application
 
 ```bash
-cd /var/www/vhosts/cucorn.com/subdomains/llm/llm-instruct-models
+cd /opt/llm-instruct-models
 git pull
 docker compose up -d --build
 ```
