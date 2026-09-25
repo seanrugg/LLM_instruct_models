@@ -26,8 +26,10 @@ out/
 *.db-wal
 
 # Models (large files)
-models/
-!models/.gitkeep
+/models/
+!/models/.gitkeep
+/backend/models/
+/backend/data/
 
 # Environment
 .env
