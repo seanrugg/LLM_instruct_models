@@ -1,0 +1,20 @@
+{
+  "name": "llm-instruct-models-backend",
+  "version": "0.2.0",
+  "description": "Node.js backend for LLM Instruct Models Repository (Plesk Node.js extension)",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "build": "cd ../frontend && npm ci && npx vite build --outDir ../plesk-node/public --emptyOutDir"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "busboy": "^1.6.0",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.0"
+  }
+}

@@ -56,6 +56,9 @@ logs/
 # Docker
 .docker/
 
+# Plesk Node build output
+plesk-node/public/
+
 # Testing
 .pytest_cache/
 .coverage

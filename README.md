@@ -179,7 +179,10 @@ Interactive docs at `http://127.0.0.1:8000/docs` (dev) or proxied via Plesk (pro
 
 ## Deployment
 
-See [DEPLOY_PLESK.md](./DEPLOY_PLESK.md) for the full Plesk/IONOS deployment guide.
+Two deployment options for Plesk/IONOS:
+
+- **[DEPLOY_PLESK.md](./DEPLOY_PLESK.md)** — Docker Compose option (PostgreSQL in container, nginx reverse proxy). Recommended for most deployments.
+- **[DEPLOY_PLESK_NODE.md](./DEPLOY_PLESK_NODE.md)** — Node.js extension option (no Docker, Plesk-managed PostgreSQL). For servers where Docker is unavailable.
 
 ## License
 
