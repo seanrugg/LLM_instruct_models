@@ -1,12 +1,14 @@
 import React, { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { authAPI } from '../api/client'
+import { useAuth } from '../context/AuthContext'
 
 export function Login() {
   const [formData, setFormData] = useState({ username: '', password: '' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
+  const { login, allowRegistration } = useAuth()
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -15,8 +17,7 @@ export function Login() {
 
     try {
       const response = await authAPI.login(formData)
-      localStorage.setItem('token', response.data.access_token)
-      localStorage.setItem('user', JSON.stringify(response.data.user))
+      login(response.data, response.data.user)
       navigate('/')
     } catch (err) {
       setError(err.response?.data?.detail || 'Login failed')
@@ -55,9 +56,11 @@ export function Login() {
             {loading ? 'Logging in...' : 'Login'}
           </button>
         </form>
-        <p style={{ marginTop: '1rem', textAlign: 'center' }}>
-          Don't have an account? <Link to="/register">Register</Link>
-        </p>
+        {allowRegistration && (
+          <p style={{ marginTop: '1rem', textAlign: 'center' }}>
+            Don't have an account? <Link to="/register">Register</Link>
+          </p>
+        )}
       </div>
     </div>
   )

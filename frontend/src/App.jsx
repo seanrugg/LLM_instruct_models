@@ -27,7 +27,7 @@ function Header() {
         <Link to="/upload" className={location.pathname === '/upload' ? 'active' : ''}>
           Upload
         </Link>
-        {!allowRegistration && (
+        {!user && !allowRegistration && (
           <span style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
             Contact admin for account
           </span>
@@ -37,9 +37,11 @@ function Header() {
             {user.username}
           </span>
         )}
-        <button className="btn btn-secondary" onClick={handleLogout}>
-          Logout
-        </button>
+        {user && (
+          <button className="btn btn-secondary" onClick={handleLogout}>
+            Logout
+          </button>
+        )}
       </nav>
     </header>
   )
