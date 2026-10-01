@@ -15,11 +15,14 @@ client.interceptors.request.use((config) => {
   return config
 })
 
+// Track if an upload is in progress (don't redirect during upload)
+let uploadInProgress = false
+
 // Handle 401 responses
 client.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !uploadInProgress) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
       window.location.href = '/login'
@@ -27,6 +30,11 @@ client.interceptors.response.use(
     return Promise.reject(error)
   }
 )
+
+// Expose upload tracking for callers
+export function setUploadInProgress (inProgress) {
+  uploadInProgress = inProgress
+}
 
 export default client
 

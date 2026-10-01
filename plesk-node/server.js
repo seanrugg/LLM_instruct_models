@@ -101,6 +101,39 @@ const CREATE_TABLES_SQL = `
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+
+  -- File-derived immutable metadata (extracted from stored file)
+  ALTER TABLE models
+    ADD COLUMN IF NOT EXISTS file_format VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS sha256 CHAR(64),
+    ADD COLUMN IF NOT EXISTS architecture VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS parameter_count BIGINT,
+    ADD COLUMN IF NOT EXISTS quantization VARCHAR(32),
+    ADD COLUMN IF NOT EXISTS context_length INTEGER,
+    ADD COLUMN IF NOT EXISTS chat_template TEXT,
+    ADD COLUMN IF NOT EXISTS license VARCHAR(128),
+    ADD COLUMN IF NOT EXISTS source_model_name VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS file_metadata JSONB,
+    ADD COLUMN IF NOT EXISTS metadata_extracted_at TIMESTAMPTZ;
+
+  -- Trigger: lock file-derived metadata once extracted
+  CREATE OR REPLACE FUNCTION models_lock_file_metadata() RETURNS trigger AS $$
+  BEGIN
+    IF OLD.metadata_extracted_at IS NOT NULL AND (
+       NEW.file_format IS DISTINCT FROM OLD.file_format OR NEW.sha256 IS DISTINCT FROM OLD.sha256 OR
+       NEW.architecture IS DISTINCT FROM OLD.architecture OR NEW.parameter_count IS DISTINCT FROM OLD.parameter_count OR
+       NEW.quantization IS DISTINCT FROM OLD.quantization OR NEW.context_length IS DISTINCT FROM OLD.context_length OR
+       NEW.chat_template IS DISTINCT FROM OLD.chat_template OR NEW.license IS DISTINCT FROM OLD.license OR
+       NEW.source_model_name IS DISTINCT FROM OLD.source_model_name OR NEW.file_metadata IS DISTINCT FROM OLD.file_metadata OR
+       NEW.metadata_extracted_at IS DISTINCT FROM OLD.metadata_extracted_at OR NEW.size_bytes IS DISTINCT FROM OLD.size_bytes OR
+       NEW.filename IS DISTINCT FROM OLD.filename OR NEW.framework IS DISTINCT FROM OLD.framework) THEN
+      RAISE EXCEPTION 'file-derived metadata is immutable';
+    END IF;
+    RETURN NEW;
+  END $$ LANGUAGE plpgsql;
+  DROP TRIGGER IF EXISTS trg_models_lock_file_metadata ON models;
+  CREATE TRIGGER trg_models_lock_file_metadata BEFORE UPDATE ON models
+    FOR EACH ROW EXECUTE FUNCTION models_lock_file_metadata();
 `
 
 async function ensureTables () {
@@ -210,7 +243,7 @@ function deleteModelDir (userId, modelId) {
 function createAccessToken (userId) {
   return jwt.sign({ sub: userId }, JWT_SECRET_KEY, {
     algorithm: JWT_ALGORITHM,
-    expiresIn: JWT_EXPIRE_MINUTES,
+    expiresIn: `${JWT_EXPIRE_MINUTES}m`,
   })
 }
 
@@ -232,7 +265,7 @@ function createDownloadToken (userId, modelId) {
     JWT_SECRET_KEY,
     {
       algorithm: JWT_ALGORITHM,
-      expiresIn: DOWNLOAD_TOKEN_EXPIRE_MINUTES,
+      expiresIn: `${DOWNLOAD_TOKEN_EXPIRE_MINUTES}m`,
     }
   )
 }
@@ -513,6 +546,69 @@ app.delete('/api/users/:user_id', requireAuth, async (req, res) => {
 
 // ── Model Routes ───────────────────────────────────────────────
 
+// Dynamic import for the model header parser (pure ESM module)
+let parseModelHeader = null
+async function loadParser () {
+  if (!parseModelHeader) {
+    const parser = await import('../frontend/src/lib/modelHeader.mjs')
+    parseModelHeader = parser.parseModelHeader
+  }
+  return parseModelHeader
+}
+
+async function extractMetadataFromFile (filePath, filename) {
+  try {
+    const stat = fs.statSync(filePath)
+    const fileSize = stat.size
+
+    const readBytes = async (offset, length) => {
+      const fd = await fs.promises.open(filePath, 'r')
+      try {
+        const buffer = Buffer.alloc(length)
+        const { bytesRead } = await fd.read(buffer, 0, length, offset)
+        await fd.close()
+        return new Uint8Array(buffer.buffer, buffer.byteOffset, bytesRead)
+      } catch (err) {
+        await fd.close().catch(() => {})
+        throw err
+      }
+    }
+
+    const parser = await loadParser()
+    return await parseModelHeader(readBytes, fileSize, filename)
+  } catch (err) {
+    console.error('Metadata extraction error:', err.message)
+    return {
+      file_format: guessFileFormat(filename),
+      architecture: null,
+      parameter_count: null,
+      quantization: null,
+      context_length: null,
+      chat_template: null,
+      license: null,
+      source_model_name: null,
+      file_metadata: {},
+      warnings: [`Extraction failed: ${err.message}`],
+    }
+  }
+}
+
+function guessFileFormat (filename) {
+  const ext = getFileExtension(filename)
+  const formatMap = {
+    '.gguf': 'gguf',
+    '.safetensors': 'safetensors',
+    '.onnx': 'onnx',
+    '.pt': 'pytorch',
+    '.pth': 'pytorch',
+    '.tar': 'archive',
+    '.zip': 'archive',
+    '.gz': 'archive',
+    '.bin': 'bin',
+  }
+  return formatMap[ext] || 'unknown'
+}
+
 function rowToModelResponse (row) {
   return {
     id: row.id,
@@ -526,6 +622,18 @@ function rowToModelResponse (row) {
     filename: row.filename,
     original_filename: row.original_filename,
     content_type: row.content_type,
+    // File-derived immutable metadata
+    file_format: row.file_format,
+    sha256: row.sha256,
+    architecture: row.architecture,
+    parameter_count: row.parameter_count !== null && row.parameter_count !== undefined ? parseInt(row.parameter_count, 10) : null,
+    quantization: row.quantization,
+    context_length: row.context_length,
+    chat_template: row.chat_template,
+    license: row.license,
+    source_model_name: row.source_model_name,
+    file_metadata: row.file_metadata,
+    metadata_extracted_at: row.metadata_extracted_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
   }
@@ -600,13 +708,27 @@ app.get('/api/models/:model_id', requireAuth, async (req, res) => {
 })
 
 app.post('/api/models', requireAuth, async (req, res) => {
-  const { name, description, version, tags, framework } = req.body
+  const { name, description, version, tags, framework, ...extra } = req.body
+
+  // Reject any locked/derived fields
+  const lockedFields = ['sha256', 'file_format', 'architecture', 'parameter_count',
+    'quantization', 'context_length', 'chat_template', 'license',
+    'source_model_name', 'file_metadata', 'metadata_extracted_at']
+  for (const field of lockedFields) {
+    if (extra[field] !== undefined) {
+      return res.status(400).json({ detail: `Field ${field} is derived from the file and cannot be set` })
+    }
+  }
+  // Also reject framework (now derived from file)
+  if (framework !== undefined) {
+    return res.status(400).json({ detail: 'Field framework is derived from the file and cannot be set' })
+  }
 
   const result = await pool.query(
-    `INSERT INTO models (owner_id, name, description, version, tags, framework, filename)
-     VALUES ($1, $2, $3, $4, $5, $6, '')
+    `INSERT INTO models (owner_id, name, description, version, tags, filename)
+     VALUES ($1, $2, $3, $4, $5, '')
      RETURNING *`,
-    [req.user.sub, name, description || null, version || null, tags || null, framework || null]
+    [req.user.sub, name, description || null, version || null, tags || null]
   )
 
   res.status(201).json(rowToModelResponse(result.rows[0]))
@@ -614,7 +736,7 @@ app.post('/api/models', requireAuth, async (req, res) => {
 
 app.put('/api/models/:model_id', requireAuth, async (req, res) => {
   const { model_id } = req.params
-  const { name, description, version, tags, framework } = req.body
+  const { name, description, version, tags, framework, ...extra } = req.body
 
   const result = await pool.query('SELECT * FROM models WHERE id = $1', [model_id])
   if (result.rows.length === 0) {
@@ -626,6 +748,20 @@ app.put('/api/models/:model_id', requireAuth, async (req, res) => {
     return res.status(403).json({ detail: 'Not authorized to update this model' })
   }
 
+  // Reject any locked/derived fields
+  const lockedFields = ['sha256', 'file_format', 'architecture', 'parameter_count',
+    'quantization', 'context_length', 'chat_template', 'license',
+    'source_model_name', 'file_metadata', 'metadata_extracted_at']
+  for (const field of lockedFields) {
+    if (extra[field] !== undefined) {
+      return res.status(400).json({ detail: `Field ${field} is derived from the file and cannot be set` })
+    }
+  }
+  // Also reject framework (now derived from file)
+  if (framework !== undefined) {
+    return res.status(400).json({ detail: 'Field framework is derived from the file and cannot be set' })
+  }
+
   const fields = []
   const values = []
   let idx = 1
@@ -634,7 +770,6 @@ app.put('/api/models/:model_id', requireAuth, async (req, res) => {
   if (description !== undefined) { fields.push(`description = $${idx++}`); values.push(description) }
   if (version !== undefined) { fields.push(`version = $${idx++}`); values.push(version) }
   if (tags !== undefined) { fields.push(`tags = $${idx++}`); values.push(tags) }
-  if (framework !== undefined) { fields.push(`framework = $${idx++}`); values.push(framework) }
 
   fields.push(`updated_at = NOW()`)
   values.push(model_id)
@@ -685,6 +820,11 @@ app.post('/api/models/:model_id/upload', requireAuth, async (req, res) => {
 
   const model = modelResult.rows[0]
 
+  // Check if file already uploaded (409)
+  if (model.filename) {
+    return res.status(409).json({ detail: 'File already uploaded; create a new model/version instead' })
+  }
+
   // Parse multipart via Busboy — stream directly to temp file
   const busboy = new Busboy({ headers: req.headers })
   let byteCount = 0
@@ -695,6 +835,7 @@ app.post('/api/models/:model_id/upload', requireAuth, async (req, res) => {
   let writeStream = null
   let errorSent = false
   let uploadDone = false
+  let hash = crypto.createHash('sha256')
 
   busboy.on('file', async (fieldname, fileStream, info) => {
     if (fieldname !== 'file') {
@@ -728,6 +869,7 @@ app.post('/api/models/:model_id/upload', requireAuth, async (req, res) => {
 
     fileStream.on('data', (chunk) => {
       byteCount += chunk.length
+      hash.update(chunk)
 
       if (byteCount > MAX_UPLOAD_BYTES) {
         fileStream.destroy()
@@ -767,6 +909,9 @@ app.post('/api/models/:model_id/upload', requireAuth, async (req, res) => {
       writeStream.end()
     })
 
+    // Compute SHA-256
+    const sha256 = hash.digest('hex')
+
     // Commit temp file to final location
     const finalFilename = commitTemp(tempPath, req.user.sub, model_id, storedFilename)
 
@@ -775,17 +920,31 @@ app.post('/api/models/:model_id/upload', requireAuth, async (req, res) => {
       deleteFile(req.user.sub, model_id, model.filename)
     }
 
-    // Update model
+    // Extract metadata from file
+    const filePath = getFilePath(req.user.sub, model_id, finalFilename)
+    const extracted = await extractMetadataFromFile(filePath, originalFilename)
+
+    // Single UPDATE for all fields
     await pool.query(
-      `UPDATE models SET filename = $1, original_filename = $2, content_type = $3, size_bytes = $4, updated_at = NOW() WHERE id = $5`,
-      [finalFilename, originalFilename, contentType, byteCount, model_id]
+      `UPDATE models SET
+        filename = $1, original_filename = $2, content_type = $3, size_bytes = $4,
+        sha256 = $5, file_format = $6, architecture = $7, parameter_count = $8,
+        quantization = $9, context_length = $10, chat_template = $11, license = $12,
+        source_model_name = $13, file_metadata = $14, framework = $15,
+        metadata_extracted_at = NOW(), updated_at = NOW()
+       WHERE id = $16`,
+      [
+        finalFilename, originalFilename, contentType, byteCount,
+        sha256, extracted.file_format, extracted.architecture, extracted.parameter_count,
+        extracted.quantization, extracted.context_length, extracted.chat_template, extracted.license,
+        extracted.source_model_name, extracted.file_metadata || '{}', extracted.file_format,
+        model_id,
+      ]
     )
 
-    res.json({
-      message: 'File uploaded successfully',
-      filename: finalFilename,
-      size: byteCount,
-    })
+    // Fetch updated model to return full response
+    const updated = await pool.query('SELECT * FROM models WHERE id = $1', [model_id])
+    res.json(rowToModelResponse(updated.rows[0]))
   })
 
   busboy.on('error', (err) => {

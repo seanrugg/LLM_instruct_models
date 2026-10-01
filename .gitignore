@@ -6,6 +6,7 @@ __pycache__/
 .Python
 venv/
 .venv/
+.venv-test/
 env/
 ENV/
 *.egg-info/
@@ -64,3 +65,4 @@ plesk-node/public/
 .coverage
 htmlcov/
 .tox/
+.fixtures-debug/
