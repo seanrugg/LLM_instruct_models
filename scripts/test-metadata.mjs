@@ -94,8 +94,8 @@ async function runTests () {
       ggufResult.chat_template && ggufResult.chat_template.includes('messages'),
       'chat_template contains template'
     )
-    // parameter_count = 128000*4096 + 4096*4096 = 541065216
-    assert(ggufResult.parameter_count === 541065216, `parameter_count is 541065216 (got ${ggufResult.parameter_count})`)
+    // parameter_count = 32*16 + 16*16 = 512 + 256 = 768
+    assert(ggufResult.parameter_count === 768, `parameter_count is 768 (got ${ggufResult.parameter_count})`)
     assert(Array.isArray(ggufResult.warnings), 'warnings is an array')
 
     console.log('\n=== Test 2: Safetensors Parser (reference-generated) ===\n')

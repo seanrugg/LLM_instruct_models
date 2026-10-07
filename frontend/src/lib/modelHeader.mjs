@@ -96,10 +96,10 @@ export async function parseGgufHeader (readBytes, fileSize, filename) {
     // Read KV pairs
     const kvPairs = {}
     for (let i = 0; i < kvCount && offset < MAX_HEADER_BYTES; i++) {
-      // Read key length
-      const keyLenBuf = await readBytes(offset, 4)
-      offset += 4
-      const keyLen = new DataView(keyLenBuf.buffer, keyLenBuf.byteOffset, keyLenBuf.byteLength).getUint32(0, true)
+      // Read key length (uint64, per GGUF spec: key is stored as STRING type)
+      const keyLenBuf = await readBytes(offset, 8)
+      offset += 8
+      const keyLen = Number(new DataView(keyLenBuf.buffer, keyLenBuf.byteOffset, keyLenBuf.byteLength).getBigUint64(0, true))
 
       // Read key
       const keyBuf = await readBytes(offset, keyLen)
@@ -111,7 +111,23 @@ export async function parseGgufHeader (readBytes, fileSize, filename) {
       offset += 4
       const valueType = new DataView(typeBuf.buffer, typeBuf.byteOffset, typeBuf.byteLength).getUint32(0, true)
 
-      // Read value based on type
+      // Read value based on type.
+      // GGUF KV binary format:
+      //   key_len: uint64 (8 bytes)
+      //   key: key_len bytes
+      //   value_type: uint32 (4 bytes)
+      //   value: type-dependent
+      //     STRING: uint64 str_len + str_len bytes
+      //     UINT32: uint32
+      //     INT32: int32
+      //     FLOAT32: float32
+      //     BOOL: 1 byte
+      //     UINT64: uint64
+      //     INT64: int64
+      //     FLOAT64: float64
+      //     ARRAY: uint32 elem_type + uint64 count + elements
+      //       STRING elements: uint64 str_len + bytes
+      //       numeric elements: per-type size
       let value = null
       switch (valueType) {
         case GGUF_TYPE.UINT32: {
@@ -132,13 +148,37 @@ export async function parseGgufHeader (readBytes, fileSize, filename) {
           value = new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getFloat32(0, true)
           break
         }
+        case GGUF_TYPE.BOOL: {
+          const buf = await readBytes(offset, 1)
+          offset += 1
+          value = buf[0] !== 0
+          break
+        }
         case GGUF_TYPE.STRING: {
-          const strLenBuf = await readBytes(offset, 4)
-          offset += 4
-          const strLen = new DataView(strLenBuf.buffer, strLenBuf.byteOffset, strLenBuf.byteLength).getUint32(0, true)
+          const strLenBuf = await readBytes(offset, 8)
+          offset += 8
+          const strLen = Number(new DataView(strLenBuf.buffer, strLenBuf.byteOffset, strLenBuf.byteLength).getBigUint64(0, true))
           const strBuf = await readBytes(offset, strLen)
           offset += strLen
           value = new TextDecoder().decode(strBuf)
+          break
+        }
+        case GGUF_TYPE.UINT64: {
+          const buf = await readBytes(offset, 8)
+          offset += 8
+          value = Number(new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getBigUint64(0, true))
+          break
+        }
+        case GGUF_TYPE.INT64: {
+          const buf = await readBytes(offset, 8)
+          offset += 8
+          value = Number(new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getBigInt64(0, true))
+          break
+        }
+        case GGUF_TYPE.FLOAT64: {
+          const buf = await readBytes(offset, 8)
+          offset += 8
+          value = new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getFloat64(0, true)
           break
         }
         case GGUF_TYPE.ARRAY: {
@@ -149,44 +189,98 @@ export async function parseGgufHeader (readBytes, fileSize, filename) {
           offset += 8
           const arrLen = Number(new DataView(arrLenBuf.buffer, arrLenBuf.byteOffset, arrLenBuf.byteLength).getBigInt64(0, true))
 
+          // Helper: bytes per array element
+          function arrElemBytes (t) {
+            switch (t) {
+              case GGUF_TYPE.UINT8:
+              case GGUF_TYPE.INT8:
+              case GGUF_TYPE.BOOL: return 1
+              case GGUF_TYPE.UINT16:
+              case GGUF_TYPE.INT16: return 2
+              case GGUF_TYPE.UINT32:
+              case GGUF_TYPE.INT32:
+              case GGUF_TYPE.FLOAT32: return 4
+              case GGUF_TYPE.STRING: return -1 // variable
+              case GGUF_TYPE.UINT64:
+              case GGUF_TYPE.INT64:
+              case GGUF_TYPE.FLOAT64: return 8
+              default: return 8
+            }
+          }
+
           // Skip large arrays
           if (isLargeArray(key, arrLen)) {
             let skipBytes = 0
             for (let j = 0; j < arrLen; j++) {
-              switch (arrType) {
-                case GGUF_TYPE.UINT32: skipBytes += 4; break
-                case GGUF_TYPE.INT32: skipBytes += 4; break
-                case GGUF_TYPE.FLOAT32: skipBytes += 4; break
-                case GGUF_TYPE.STRING: {
-                  const slBuf = await readBytes(offset + skipBytes, 4)
-                  const sl = new DataView(slBuf.buffer, slBuf.byteOffset, slBuf.byteLength).getUint32(0, true)
-                  skipBytes += 4 + sl
-                  break
-                }
-                default: skipBytes += 8 // assume 8 bytes per element
+              if (arrType === GGUF_TYPE.STRING) {
+                const slBuf = await readBytes(offset + skipBytes, 8)
+                const sl = Number(new DataView(slBuf.buffer, slBuf.byteOffset, slBuf.byteLength).getBigUint64(0, true))
+                skipBytes += 8 + sl
+              } else {
+                skipBytes += arrElemBytes(arrType)
               }
             }
             await readBytes(offset, skipBytes)
             offset += skipBytes
             value = null // skipped
           } else {
-            // Read small array (simplified)
+            // Read small array
             value = []
             for (let j = 0; j < arrLen; j++) {
               switch (arrType) {
+                case GGUF_TYPE.UINT8:
+                case GGUF_TYPE.INT8:
+                case GGUF_TYPE.BOOL: {
+                  const buf = await readBytes(offset, 1)
+                  offset += 1
+                  value.push(arrType === GGUF_TYPE.BOOL ? buf[0] !== 0 : buf[0])
+                  break
+                }
+                case GGUF_TYPE.UINT16:
+                case GGUF_TYPE.INT16: {
+                  const buf = await readBytes(offset, 2)
+                  offset += 2
+                  value.push(new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint16(0, true))
+                  break
+                }
                 case GGUF_TYPE.UINT32: {
                   const buf = await readBytes(offset, 4)
                   offset += 4
                   value.push(new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint32(0, true))
                   break
                 }
-                case GGUF_TYPE.STRING: {
-                  const slBuf = await readBytes(offset, 4)
+                case GGUF_TYPE.INT32: {
+                  const buf = await readBytes(offset, 4)
                   offset += 4
-                  const sl = new DataView(slBuf.buffer, slBuf.byteOffset, slBuf.byteLength).getUint32(0, true)
+                  value.push(new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getInt32(0, true))
+                  break
+                }
+                case GGUF_TYPE.FLOAT32: {
+                  const buf = await readBytes(offset, 4)
+                  offset += 4
+                  value.push(new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getFloat32(0, true))
+                  break
+                }
+                case GGUF_TYPE.STRING: {
+                  const slBuf = await readBytes(offset, 8)
+                  offset += 8
+                  const sl = Number(new DataView(slBuf.buffer, slBuf.byteOffset, slBuf.byteLength).getBigUint64(0, true))
                   const strBuf = await readBytes(offset, sl)
                   offset += sl
                   value.push(new TextDecoder().decode(strBuf))
+                  break
+                }
+                case GGUF_TYPE.UINT64:
+                case GGUF_TYPE.INT64: {
+                  const buf = await readBytes(offset, 8)
+                  offset += 8
+                  value.push(Number(new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getBigInt64(0, true)))
+                  break
+                }
+                case GGUF_TYPE.FLOAT64: {
+                  const buf = await readBytes(offset, 8)
+                  offset += 8
+                  value.push(new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getFloat64(0, true))
                   break
                 }
                 default:
@@ -196,12 +290,6 @@ export async function parseGgufHeader (readBytes, fileSize, filename) {
               }
             }
           }
-          break
-        }
-        case GGUF_TYPE.BOOL: {
-          const buf = await readBytes(offset, 1)
-          offset += 1
-          value = buf[0] !== 0
           break
         }
         default:

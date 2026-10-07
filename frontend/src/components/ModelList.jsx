@@ -14,6 +14,23 @@ function formatSize(bytes) {
   return `${size.toFixed(2)} ${units[i]}`
 }
 
+function SkeletonCard() {
+  return (
+    <div className="card" style={{ opacity: 0.6 }}>
+      <div className="card-header">
+        <div className="skeleton" style={{ width: '60%', height: '1.25rem' }}></div>
+        <div className="skeleton" style={{ width: '60px', height: '24px' }}></div>
+      </div>
+      <div className="skeleton" style={{ width: '100%', height: '1rem' }}></div>
+      <div className="skeleton" style={{ width: '80%', height: '1rem' }}></div>
+      <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+        <div className="skeleton" style={{ width: '80px', height: '1rem' }}></div>
+        <div className="skeleton" style={{ width: '60px', height: '1rem' }}></div>
+      </div>
+    </div>
+  )
+}
+
 export function ModelList() {
   const [models, setModels] = useState([])
   const [total, setTotal] = useState(0)
@@ -21,6 +38,7 @@ export function ModelList() {
   const [query, setQuery] = useState('') // Uncommitted search query
   const [search, setSearch] = useState('') // Committed search query
   const [loading, setLoading] = useState(true)
+  const [searching, setSearching] = useState(false)
   const navigate = useNavigate()
 
   const loadModels = useCallback(async () => {
@@ -44,6 +62,7 @@ export function ModelList() {
 
   const handleSearch = (e) => {
     e.preventDefault()
+    setSearching(true)
     setSearch(query) // Commit the query
     setPage(1)
   }
@@ -73,7 +92,13 @@ export function ModelList() {
       </div>
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '3rem' }}>Loading...</div>
+        <div className="grid grid-3">
+          {Array.from({ length: 6 }, (_, i) => <SkeletonCard key={i} />)}
+        </div>
+      ) : searching ? (
+        <div className="grid grid-3">
+          {Array.from({ length: 6 }, (_, i) => <SkeletonCard key={i} />)}
+        </div>
       ) : models.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
           <h3>No models found</h3>
@@ -99,8 +124,11 @@ export function ModelList() {
                 </p>
               )}
               <div className="model-meta">
-                {model.version && <span>v{model.version}</span>}
+                {model.architecture && <span>{model.architecture}</span>}
+                {model.parameter_count && <span>{formatParamCount(model.parameter_count)}</span>}
+                {model.quantization && <span>{model.quantization}</span>}
                 {model.size_bytes && <span className="size">{formatSize(model.size_bytes)}</span>}
+                {model.version && <span>v{model.version}</span>}
               </div>
               {model.tags && model.tags.length > 0 && (
                 <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -135,4 +163,12 @@ export function ModelList() {
       )}
     </div>
   )
+}
+
+function formatParamCount(val) {
+  if (!val) return 'Unknown'
+  if (val >= 1_000_000_000) return `${(val / 1_000_000_000).toFixed(1)}B`
+  if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1)}M`
+  if (val >= 1_000) return `${(val / 1_000).toFixed(1)}K`
+  return String(val)
 }

@@ -67,8 +67,11 @@ def generate_gguf(output_path: str) -> None:
     # UINT64 key
     writer.add_key_value("general.eos_token_id", 128001, gguf.GGUFValueType.UINT64)
 
-    # Add 2 small tensors (tiny for fixture size)
+    # Add general.parameter_count (gguf library does not auto-add it)
     # parameter_count = 32*16 + 16*16 = 512 + 256 = 768
+    writer.add_key_value("general.parameter_count", 768, gguf.GGUFValueType.UINT64)
+
+    # Add 2 small tensors (tiny for fixture size)
     writer.add_tensor("model.embed_tokens.weight", np.zeros((32, 16), dtype=np.float16))
     writer.add_tensor("model.layers.0.self_attn.q_proj.weight", np.zeros((16, 16), dtype=np.float16))
 

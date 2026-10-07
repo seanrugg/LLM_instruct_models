@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { modelAPI, userAPI, setUploadInProgress } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 
 const ALLOWED_EXTENSIONS = ['.gguf', '.pt', '.pth', '.safetensors', '.onnx', '.tar', '.zip', '.gz', '.bin']
 const FRAMEWORK_MAP = {
@@ -69,6 +70,7 @@ async function parseFileInBrowser (file) {
 
 export function UploadModel() {
   const { user, token, login, logout } = useAuth()
+  const toast = useToast()
   const [file, setFile] = useState(null)
   const [dragging, setDragging] = useState(false)
   const [metadata, setMetadata] = useState({
@@ -183,6 +185,7 @@ export function UploadModel() {
         if (err.response?.status === 401) {
           logout()
           setError('Your session has expired. Please log in again.')
+          toast.error('Session expired. Please log in again.')
           navigate('/login')
           return
         }
@@ -226,6 +229,7 @@ export function UploadModel() {
         name: response.data.name,
         file_format: response.data.file_format,
       })
+      toast.success(`Upload complete: ${response.data.name}`)
     } catch (err) {
       // Clean up orphan model record if upload failed after create
       if (createdModelId) {
@@ -234,15 +238,18 @@ export function UploadModel() {
         } catch (_) { /* ignore cleanup errors */ }
       }
 
+      let errorMessage = 'Upload failed'
       if (err.response?.status === 413) {
-        setError('File too large. Maximum size: 50GB')
+        errorMessage = 'File too large. Maximum size: 50GB'
       } else if (err.response?.status === 409) {
-        setError('A file has already been uploaded for this model. Create a new model or version instead.')
+        errorMessage = 'A file has already been uploaded for this model. Create a new model or version instead.'
       } else if (err.response?.status === 400) {
-        setError('Upload failed: ' + (err.response?.data?.detail || 'Invalid file'))
+        errorMessage = 'Upload failed: ' + (err.response?.data?.detail || 'Invalid file')
       } else {
-        setError(err.response?.data?.detail || 'Upload failed')
+        errorMessage = err.response?.data?.detail || 'Upload failed'
       }
+      setError(errorMessage)
+      toast.error(errorMessage)
     } finally {
       setUploading(false)
       uploadRef.current = false

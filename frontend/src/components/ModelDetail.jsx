@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { modelAPI } from '../api/client'
+import { useToast } from '../context/ToastContext'
 
 function formatSize(bytes) {
   if (!bytes || bytes === 0) return 'Unknown'
@@ -33,8 +34,45 @@ function formatParamCount(val) {
   return String(val)
 }
 
+function DetailSkeleton() {
+  return (
+    <div style={{ maxWidth: 800, margin: '0 auto' }}>
+      <div className="skeleton" style={{ width: '4rem', height: '2rem', marginBottom: '1rem' }}></div>
+      <div className="card">
+        <div className="card-header">
+          <div className="skeleton" style={{ width: '40%', height: '1.5rem' }}></div>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div className="skeleton" style={{ width: '5rem', height: '2rem' }}></div>
+            <div className="skeleton" style={{ width: '4rem', height: '2rem' }}></div>
+            <div className="skeleton" style={{ width: '4rem', height: '2rem' }}></div>
+          </div>
+        </div>
+        <div className="skeleton" style={{ width: '100%', height: '1rem' }}></div>
+        <div className="skeleton" style={{ width: '80%', height: '1rem' }}></div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginTop: '1.5rem' }}>
+          <div className="skeleton" style={{ width: '100%', height: '3rem' }}></div>
+          <div className="skeleton" style={{ width: '100%', height: '3rem' }}></div>
+          <div className="skeleton" style={{ width: '100%', height: '3rem' }}></div>
+        </div>
+      </div>
+      <div className="card" style={{ borderTop: '3px solid var(--success)' }}>
+        <div className="skeleton" style={{ width: '30%', height: '1.25rem', marginBottom: '1rem' }}></div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i}>
+              <div className="skeleton" style={{ width: '60%', height: '0.875rem', marginBottom: '0.5rem' }}></div>
+              <div className="skeleton" style={{ width: '100%', height: '1rem' }}></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ModelDetail() {
   const { id } = useParams()
+  const toast = useToast()
   const [model, setModel] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -77,6 +115,7 @@ export function ModelDetail() {
       })
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to load model')
+      toast.error(err.response?.data?.detail || 'Failed to load model')
     } finally {
       setLoading(false)
     }
@@ -87,9 +126,11 @@ export function ModelDetail() {
 
     try {
       await modelAPI.delete(id)
+      toast.success('Model deleted successfully')
       navigate('/')
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to delete model')
+      toast.error(err.response?.data?.detail || 'Failed to delete model')
     }
   }
 
@@ -124,8 +165,10 @@ export function ModelDetail() {
       })
       setEditing(false)
       await loadModel()
+      toast.success('Changes saved successfully')
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to save changes')
+      toast.error(err.response?.data?.detail || 'Failed to save changes')
     } finally {
       setSaving(false)
     }
@@ -141,7 +184,7 @@ export function ModelDetail() {
     }
   }
 
-  if (loading) return <div style={{ textAlign: 'center', padding: '3rem' }}>Loading...</div>
+  if (loading) return <DetailSkeleton />
   if (error) return <div className="alert alert-error">{error}</div>
   if (!model) return null
 

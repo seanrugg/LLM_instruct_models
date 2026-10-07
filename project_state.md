@@ -52,9 +52,9 @@ A web application for hosting and managing LLM instruct models (GGUF, safetensor
 ## Pending Bugs
 
 ### 1. GGUF Parser KV Extraction Fails (CRITICAL)
-**Status**: Identified, not yet fixed.
+**Status**: Root cause confirmed (uint32 vs uint64 length misalignment); fix pending.
 **Symptom**: Safetensors parser works (4/4 tests pass). GGUF parser detects format correctly but fails to extract any KV pair values — all fields return null with warning "GGUF parse error: Offset is outside the bounds of the DataView".
-**Root cause suspected**: The per-type byte-size skip table for array elements uses wrong sizes (default case uses 8 bytes; FLOAT32 should be 4, BOOL should be 1, UINT8/INT8 should be 1, etc.). String lengths and array counts may also be read as uint32 instead of uint64 in GGUF v2/v3.
+**Root cause confirmed**: The parser treats key lengths, string lengths, and array counts as uint32 (4 bytes), but GGUF v2/v3 requires uint64 (8 bytes). This causes a 4-byte misalignment that corrupts every read after the first key. The per-type byte-size table for array elements must also be strictly enforced (e.g., FLOAT32=4, BOOL=1).
 **Debugging progress**:
 - Reference reader (Python gguf package) confirms fixture is valid: 12 KV pairs, 2 tensors, version 3.
 - Manual byte-level parse confirms file structure is correct.
@@ -62,9 +62,9 @@ A web application for hosting and managing LLM instruct models (GGUF, safetensor
 - The `value_type` read returns 1701999988 (0x65544C4C = "LLTe" in ASCII), confirming the offset is completely wrong after reading the key.
 
 **Fix needed in `frontend/src/lib/modelHeader.mjs`**:
-- Review array element skip sizes: UINT8=1, INT8=1, UINT16=2, INT16=2, UINT32=4, INT32=4, FLOAT32=4, BOOL=1, UINT64=8, INT64=8, FLOAT64=8; STRING is variable (4-byte LE length prefix + bytes).
-- Verify string length prefix is read as uint32 (correct for v2/v3 GGUF).
-- Add debug logging to trace offset after each KV pair read.
+- All GGUF length fields are uint64 (8 bytes, LE): KV key length, STRING value length, ARRAY element count. (value_type is uint32; tensor name length is uint64; tensor n_dims is uint32; tensor dims are uint64; tensor dtype is uint32; tensor offset is uint64.)
+- Per-type array element byte sizes must be strictly enforced: UINT8=1, INT8=1, UINT16=2, INT16=2, UINT32=4, INT32=4, FLOAT32=4, BOOL=1, UINT64=8, INT64=8, FLOAT64=8; STRING element = uint64 length + bytes.
+- The old assumption of "4-byte lengths / uint32 string length" was the bug — do not reintroduce it.
 
 ### 2. Gitignore Missing .fixtures-debug/
 **Status**: Fixed in latest commit (added to .gitignore).
@@ -74,7 +74,7 @@ A web application for hosting and managing LLM instruct models (GGUF, safetensor
 ### Priority 1: Fix GGUF Parser
 1. Compare parser offset trace vs reference reader byte layout
 2. Fix per-type byte-size skip table for array elements
-3. Verify string length read is correct (uint32 LE)
+3. Verify all length reads are uint64 (key, string, array count)
 4. Re-run `scripts/test-metadata.mjs` — expect all GGUF assertions to pass
 5. If parser is too broken, consider rewriting the KV extraction loop with explicit offset tracking
 

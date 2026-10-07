@@ -1,6 +1,8 @@
 import React from 'react'
 import { Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { ThemeProvider, useTheme } from './context/ThemeContext'
+import { ToastProvider } from './context/ToastContext'
 import { ProtectedRoute, PublicRoute } from './components/ProtectedRoute'
 import { Login, Register } from './components/Auth'
 import { ModelList } from './components/ModelList'
@@ -11,6 +13,7 @@ function Header() {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, allowRegistration, logout } = useAuth()
+  const { theme, toggleTheme } = useTheme()
 
   const handleLogout = () => {
     logout()
@@ -42,6 +45,13 @@ function Header() {
             Logout
           </button>
         )}
+        <button
+          className="btn btn-secondary"
+          onClick={toggleTheme}
+          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+        >
+          {theme === 'dark' ? '☀️' : '🌙'}
+        </button>
       </nav>
     </header>
   )
@@ -105,9 +115,13 @@ function AppContent() {
 
 function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ToastProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
+      </ThemeProvider>
+    </ToastProvider>
   )
 }
 
