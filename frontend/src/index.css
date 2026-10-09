@@ -212,6 +212,21 @@ textarea.form-control {
   color: var(--success);
 }
 
+.badge-warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.badge-error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 .pagination {
   display: flex;
   justify-content: center;

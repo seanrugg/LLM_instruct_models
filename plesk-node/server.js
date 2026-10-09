@@ -146,6 +146,10 @@ const CREATE_TABLES_SQL = `
   DROP TRIGGER IF EXISTS trg_models_lock_file_metadata ON models;
   CREATE TRIGGER trg_models_lock_file_metadata BEFORE UPDATE ON models
     FOR EACH ROW EXECUTE FUNCTION models_lock_file_metadata();
+
+  -- Add status/error columns (won't fail if they already exist)
+  ALTER TABLE models ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'ready' CHECK (status IN ('processing', 'ready', 'failed'));
+  ALTER TABLE models ADD COLUMN IF NOT EXISTS error TEXT;
 `
 
 async function ensureTables () {
@@ -638,6 +642,9 @@ function rowToModelResponse (row) {
     source_model_name: row.source_model_name,
     file_metadata: row.file_metadata,
     metadata_extracted_at: row.metadata_extracted_at,
+    // Processing status
+    status: row.status || 'ready',
+    error: row.error || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   }
@@ -810,6 +817,16 @@ app.delete('/api/models/:model_id', requireAuth, async (req, res) => {
 
 // ── Upload Route (multipart via Busboy) ────────────────────────
 
+// Estimate for processing time: header-only extraction is fast, ~200 MB/s conservative
+const PROCESS_RATE_MB_PER_SEC = 200
+function estimateProcessingTimeMb (sizeMb) {
+  if (sizeMb <= 200) return 'under a minute'
+  const seconds = Math.ceil(sizeMb / PROCESS_RATE_MB_PER_SEC)
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+}
+
 app.post('/api/models/:model_id/upload', requireAuth, async (req, res) => {
   let tempPath = ''
   let createdModelId = null
@@ -934,31 +951,23 @@ app.post('/api/models/:model_id/upload', requireAuth, async (req, res) => {
           deleteFile(req.user.sub, model_id, model.filename)
         }
 
-        // Extract metadata from file
-        const filePath = getFilePath(req.user.sub, model_id, finalFilename)
-        const extracted = await extractMetadataFromFile(filePath, originalFilename)
-
-        // Single UPDATE for all fields
+        // Update status to 'processing' immediately
         await pool.query(
-          `UPDATE models SET
-            filename = $1, original_filename = $2, content_type = $3, size_bytes = $4,
-            sha256 = $5, file_format = $6, architecture = $7, parameter_count = $8,
-            quantization = $9, context_length = $10, chat_template = $11, license = $12,
-            source_model_name = $13, file_metadata = $14, framework = $15,
-            metadata_extracted_at = NOW(), updated_at = NOW()
-           WHERE id = $16`,
-          [
-            finalFilename, originalFilename, contentType, byteCount,
-            sha256, extracted.file_format, extracted.architecture, extracted.parameter_count,
-            extracted.quantization, extracted.context_length, extracted.chat_template, extracted.license,
-            extracted.source_model_name, extracted.file_metadata || '{}', extracted.file_format,
-            model_id,
-          ]
+          'UPDATE models SET status = $1, error = NULL, updated_at = NOW() WHERE id = $2',
+          ['processing', model_id]
         )
 
-        // Fetch updated model to return full response
-        const updated = await pool.query('SELECT * FROM models WHERE id = $1', [model_id])
-        res.json(rowToModelResponse(updated.rows[0]))
+        // Respond 202 immediately
+        res.status(202).json({
+          id: model_id,
+          status: 'processing',
+          message: 'Upload received. Processing in background...',
+          estimate: estimateProcessingTimeMb(byteCount / (1024 * 1024)),
+        })
+        uploadDone = true
+
+        // Process in background (fire and forget)
+        processUploadInBackground(model_id, req.user.sub, finalFilename, originalFilename, contentType, byteCount, sha256)
       } catch (err) {
         console.error('Upload processing error:', err)
         sendError(500, 'Upload failed: ' + (err.message || 'Unknown error'))
@@ -989,6 +998,53 @@ app.post('/api/models/:model_id/upload', requireAuth, async (req, res) => {
     res.status(500).json({ detail: 'Upload failed: ' + (err.message || 'Unknown error') })
   }
 })
+
+// Background processing for upload finalization
+async function processUploadInBackground (model_id, userId, finalFilename, originalFilename, contentType, sizeBytes, sha256) {
+  const t0 = Date.now()
+  try {
+    console.log(`[Background] Starting processing for model ${model_id} (${originalFilename})`)
+
+    // Extract metadata from file
+    const t1 = Date.now()
+    const filePath = getFilePath(userId, model_id, finalFilename)
+    const extracted = await extractMetadataFromFile(filePath, originalFilename)
+    console.log(`[Background] Metadata extraction: ${(Date.now() - t1)}ms`)
+
+    // Single UPDATE for all fields
+    const t2 = Date.now()
+    await pool.query(
+      `UPDATE models SET
+        filename = $1, original_filename = $2, content_type = $3, size_bytes = $4,
+        sha256 = $5, file_format = $6, architecture = $7, parameter_count = $8,
+        quantization = $9, context_length = $10, chat_template = $11, license = $12,
+        source_model_name = $13, file_metadata = $14, framework = $15,
+        metadata_extracted_at = NOW(), status = 'ready', error = NULL, updated_at = NOW()
+       WHERE id = $16`,
+      [
+        finalFilename, originalFilename, contentType, sizeBytes,
+        sha256, extracted.file_format, extracted.architecture, extracted.parameter_count,
+        extracted.quantization, extracted.context_length, extracted.chat_template, extracted.license,
+        extracted.source_model_name, extracted.file_metadata || '{}', extracted.file_format,
+        model_id,
+      ]
+    )
+    console.log(`[Background] DB update: ${(Date.now() - t2)}ms`)
+    console.log(`[Background] Total processing time: ${(Date.now() - t0)}ms`)
+    console.log(`[Background] Upload processed successfully: ${model_id} (${originalFilename})`)
+  } catch (err) {
+    console.error(`[Background] Upload processing failed for model ${model_id} after ${(Date.now() - t0)}ms:`, err.message)
+    // Mark as failed
+    try {
+      await pool.query(
+        'UPDATE models SET status = $1, error = $2, updated_at = NOW() WHERE id = $3',
+        ['failed', err.message || 'Unknown error', model_id]
+      )
+    } catch (updateErr) {
+      console.error('[Background] Failed to update model status:', updateErr.message)
+    }
+  }
+}
 
 // ── Download Token Route ───────────────────────────────────────
 
@@ -1040,6 +1096,14 @@ app.get('/api/models/:model_id/download', async (req, res) => {
   const model = result.rows[0]
   if (!model.filename) {
     return res.status(404).json({ detail: 'No file uploaded for this model' })
+  }
+
+  // Check if model is ready (not still processing or failed)
+  if (model.status !== 'ready') {
+    const message = model.status === 'processing'
+      ? 'Model is still being processed. Please wait a moment and try again.'
+      : `Model upload failed: ${model.error || 'Unknown error'}`
+    return res.status(409).json({ detail: message })
   }
 
   const filePath = getFilePath(model.owner_id, model_id, model.filename)
@@ -1245,12 +1309,104 @@ app.get('*', (req, res) => {
   }
 })
 
+// ── Startup Cleanup ────────────────────────────────────────────
+
+async function cleanupStuckProcessingModels () {
+  try {
+    const cutoff = new Date(Date.now() - 30 * 60 * 1000) // 30 minutes ago
+    const result = await pool.query(
+      `UPDATE models SET status = $1, error = $2, updated_at = NOW()
+       WHERE status = 'processing' AND updated_at < $3
+       RETURNING id, name`,
+      ['failed', 'Interrupted by server restart; please re-upload.', cutoff]
+    )
+    if (result.rows.length > 0) {
+      console.log(`Cleaned up ${result.rows.length} stuck processing model(s)`)
+      for (const row of result.rows) {
+        console.log(`  - ${row.name} (id: ${row.id})`)
+      }
+    }
+  } catch (err) {
+    console.error('WARNING: Failed to cleanup stuck processing models:', err.message)
+  }
+}
+
+async function cleanupLeftoverTempFiles () {
+  try {
+    if (!fs.existsSync(UPLOAD_TMP_DIR)) return
+
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000 // 24 hours ago
+    const files = fs.readdirSync(UPLOAD_TMP_DIR)
+
+    let cleaned = 0
+    for (const file of files) {
+      const filePath = path.join(UPLOAD_TMP_DIR, file)
+      try {
+        const stat = fs.statSync(filePath)
+        if (stat.isFile() && stat.mtimeMs < cutoff) {
+          fs.unlinkSync(filePath)
+          cleaned++
+          console.log(`  - Deleted leftover temp file: ${file}`)
+        }
+      } catch (err) {
+        console.warn(`  - Failed to stat temp file ${file}:`, err.message)
+      }
+    }
+
+    if (cleaned > 0) {
+      console.log(`Cleaned up ${cleaned} leftover temp file(s) older than 24 hours`)
+    }
+  } catch (err) {
+    console.error('WARNING: Failed to cleanup leftover temp files:', err.message)
+  }
+}
+
+async function cleanupOrphanedModels () {
+  try {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000 // 24 hours ago
+
+    // Find models with no file, older than 24 hours (regardless of status)
+    const result = await pool.query(
+      `SELECT id, name, owner_id, filename
+       FROM models
+       WHERE (filename IS NULL OR filename = '')
+       AND created_at < $1`,
+      [new Date(cutoff)]
+    )
+
+    let cleaned = 0
+    for (const model of result.rows) {
+      // Delete file if it exists
+      if (model.filename) {
+        deleteFile(model.owner_id, model.id, model.filename)
+      }
+
+      // Delete model record
+      await pool.query('DELETE FROM models WHERE id = $1', [model.id])
+      cleaned++
+      console.log(`  - Deleted orphaned model: ${model.name} (id: ${model.id})`)
+    }
+
+    if (cleaned > 0) {
+      console.log(`Cleaned up ${cleaned} orphaned model(s) older than 24 hours`)
+    }
+  } catch (err) {
+    console.error('WARNING: Failed to cleanup orphaned models:', err.message)
+  }
+}
+
 // ── Start ──────────────────────────────────────────────────────
 
 async function start () {
   ensureStorageDir()
   await ensureTables()
   await bootstrapAdmin()
+
+  // Run startup cleanup
+  console.log('Running startup cleanup...')
+  await cleanupStuckProcessingModels()
+  await cleanupLeftoverTempFiles()
+  await cleanupOrphanedModels()
 
   // Log IMPORT_DIR status
   if (IMPORT_DIR) {

@@ -85,12 +85,58 @@ export function UploadModel() {
   const [progressDetail, setProgressDetail] = useState('') // "1.2 GB / 5.0 GB · 12.3 MB/s · 5m 23s"
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
-  const [successData, setSuccessData] = useState(null) // { id, sha256, name }
+  const [successData, setSuccessData] = useState(null) // { id, sha256, name, status }
   const [modelId, setModelId] = useState(null)
+  const [processing, setProcessing] = useState(false) // true after 202 response
+  const [processingStatus, setProcessingStatus] = useState(null) // 'processing' | 'ready' | 'failed'
+  const [processingError, setProcessingError] = useState(null)
+  const [processingEstimate, setProcessingEstimate] = useState('')
   const navigate = useNavigate()
   const uploadRef = useRef(false) // ref for beforeunload guard
+  const pollRef = useRef(null) // polling interval ref
 
-  // beforeunload guard
+  // Poll for status after 202 response
+  useEffect(() => {
+    if (processing && modelId) {
+      pollRef.current = setInterval(async () => {
+        try {
+          const response = await modelAPI.get(modelId)
+          const status = response.data.status
+          const error = response.data.error
+
+          if (status === 'ready') {
+            setProcessing(false)
+            setSuccess(true)
+            setSuccessData({
+              id: modelId,
+              sha256: response.data.sha256,
+              name: response.data.name,
+              file_format: response.data.file_format,
+            })
+            toast.success(`Upload complete: ${response.data.name}`)
+            clearInterval(pollRef.current)
+          } else if (status === 'failed') {
+            setProcessing(false)
+            setProcessingStatus('failed')
+            setProcessingError(error || 'Unknown error')
+            toast.error(`Upload failed: ${error || 'Unknown error'}`)
+            clearInterval(pollRef.current)
+          }
+        } catch (err) {
+          console.error('Status poll error:', err)
+          clearInterval(pollRef.current)
+        }
+      }, 3000) // Poll every 3 seconds
+
+      return () => {
+        if (pollRef.current) {
+          clearInterval(pollRef.current)
+        }
+      }
+    }
+  }, [processing, modelId, toast])
+
+  // beforeunload guard (only during actual upload, not processing)
   useEffect(() => {
     if (uploading) {
       const handler = (e) => {
@@ -172,6 +218,7 @@ export function UploadModel() {
     setProgressDetail('')
     setError('')
     setSuccess(false)
+    setProcessing(false)
     uploadRef.current = true
     setUploadInProgress(true)
 
@@ -223,6 +270,16 @@ export function UploadModel() {
         metadata: { startTime: Date.now() },
       })
 
+      // Handle 202 response (async processing)
+      if (response.status === 202) {
+        setProcessing(true)
+        setProcessingStatus('processing')
+        setProcessingEstimate(response.data.estimate || 'a few seconds')
+        toast.info(`Upload received. Processing ${response.data.estimate || 'in the background'}...`)
+        return
+      }
+
+      // Handle 200 response (sync processing - old behavior)
       setSuccess(true)
       setSuccessData({
         id: createdModelId,
@@ -276,6 +333,70 @@ export function UploadModel() {
         await navigator.clipboard.writeText(successData.sha256)
       } catch (_) { /* ignore */ }
     }
+  }
+
+  // Show processing status after 202 response
+  if (processing) {
+    return (
+      <div style={{ maxWidth: 600, margin: '4rem auto' }}>
+        <div className="card">
+          <div className="alert alert-info">
+            <h3 style={{ marginTop: 0 }}>Upload Received</h3>
+            <p>Your file has been received and is being processed.</p>
+            {processingEstimate && (
+              <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                Estimated time: <strong>{processingEstimate}</strong>
+              </p>
+            )}
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+              You can close this page. The model will appear in the list when processing is complete.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => navigate('/')}
+            >
+              Go to Model List
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Show failed status
+  if (processingStatus === 'failed' && processingError) {
+    return (
+      <div style={{ maxWidth: 600, margin: '4rem auto' }}>
+        <div className="card">
+          <div className="alert alert-error">
+            <h3 style={{ marginTop: 0 }}>Upload Failed</h3>
+            <p>The server encountered an error processing your file.</p>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+              {processingError}
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setProcessingStatus(null)
+                setProcessingError(null)
+              }}
+            >
+              Try Again
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => navigate('/')}
+            >
+              Go to Model List
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   if (success) {

@@ -65,6 +65,26 @@ export function ModelList() {
     loadModels()
   }, [loadModels])
 
+  // Poll every 5 seconds while any card shows Processing
+  useEffect(() => {
+    const hasProcessing = models.some(m => m.status === 'processing')
+    if (!hasProcessing) return
+
+    const interval = setInterval(async () => {
+      try {
+        const params = { page: 1, page_size: 12 }
+        if (search) params.search = search
+        const response = await modelAPI.list(params)
+        setModels(response.data.items)
+        setTotal(response.data.total)
+      } catch (err) {
+        console.error('Failed to poll models:', err)
+      }
+    }, 5000)
+
+    return () => clearInterval(interval)
+  }, [models, search, loadModels])
+
   const handleSearch = (e) => {
     e.preventDefault()
     setSearching(true)
@@ -153,9 +173,17 @@ export function ModelList() {
             <div key={model.id} className="card" style={{ cursor: 'pointer' }} onClick={() => navigate(`/model/${model.id}`)}>
               <div className="card-header">
                 <h3 className="card-title">{model.name}</h3>
-                {model.framework && (
-                  <span className="badge badge-primary">{model.framework}</span>
-                )}
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  {model.framework && (
+                    <span className="badge badge-primary">{model.framework}</span>
+                  )}
+                  {model.status === 'processing' && (
+                    <span className="badge badge-warning" style={{ animation: 'pulse 2s infinite' }}>Processing</span>
+                  )}
+                  {model.status === 'failed' && (
+                    <span className="badge badge-error">Failed</span>
+                  )}
+                </div>
               </div>
               {model.description && (
                 <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.875rem' }}>
