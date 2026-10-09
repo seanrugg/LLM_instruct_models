@@ -54,6 +54,18 @@ const UPLOAD_TMP_DIR = process.env.UPLOAD_TMP_DIR || path.join(MODEL_STORAGE_PAT
 
 const ALLOWED_EXTENSIONS = ['.gguf', '.pt', '.pth', '.safetensors', '.onnx', '.tar', '.zip', '.gz', '.bin']
 
+// IMPORT_DIR: optional directory to scan for unregistered model files
+// If relative, resolved against os.homedir(); if absolute, used as-is.
+// Feature is off if unset.
+let IMPORT_DIR = process.env.IMPORT_DIR || null
+if (IMPORT_DIR) {
+  if (path.isAbsolute(IMPORT_DIR)) {
+    IMPORT_DIR = IMPORT_DIR
+  } else {
+    IMPORT_DIR = path.join(os.homedir(), IMPORT_DIR)
+  }
+}
+
 // ── Validation ─────────────────────────────────────────────────
 
 if (!DEBUG) {
@@ -1040,6 +1052,157 @@ app.get('/api/models/:model_id/download', async (req, res) => {
   fs.createReadStream(filePath).pipe(res)
 })
 
+// ── Admin Import Route ─────────────────────────────────────────
+
+app.post('/api/admin/import', requireAuth, async (req, res) => {
+  try {
+    // Admin only
+    const currentUser = await pool.query('SELECT is_admin FROM users WHERE id = $1', [req.user.sub])
+    if (currentUser.rows.length === 0 || !currentUser.rows[0].is_admin) {
+      return res.status(403).json({ detail: 'Admin access required' })
+    }
+
+    if (!IMPORT_DIR) {
+      return res.status(501).json({ detail: 'IMPORT_DIR not configured' })
+    }
+
+    // Check if IMPORT_DIR exists
+    let importDirStat
+    try {
+      importDirStat = fs.statSync(IMPORT_DIR)
+    } catch (err) {
+      return res.status(404).json({ detail: `IMPORT_DIR not found: ${IMPORT_DIR}` })
+    }
+
+    if (!importDirStat.isDirectory()) {
+      return res.status(400).json({ detail: `IMPORT_DIR is not a directory: ${IMPORT_DIR}` })
+    }
+
+    // Scan directory
+    let files
+    try {
+      files = fs.readdirSync(IMPORT_DIR)
+    } catch (err) {
+      return res.status(500).json({ detail: `Failed to read IMPORT_DIR: ${err.message}` })
+    }
+
+    const imported = []
+    const skipped = []
+    const failed = []
+
+    // Get current time for 60-second recent modification check
+    const now = Date.now()
+    const recentCutoff = now - 60 * 1000
+
+    for (const filename of files) {
+      // Skip names starting with .
+      if (filename.startsWith('.')) {
+        skipped.push({ filename, reason: 'Hidden file' })
+        continue
+      }
+
+      const filePath = path.join(IMPORT_DIR, filename)
+      let fileStat
+      try {
+        fileStat = fs.lstatSync(filePath)
+      } catch (err) {
+        failed.push({ filename, reason: `Cannot stat: ${err.message}` })
+        continue
+      }
+
+      // Only top-level regular files, no symlinks
+      if (fileStat.isSymbolicLink() || !fileStat.isFile()) {
+        skipped.push({ filename, reason: 'Not a regular file' })
+        continue
+      }
+
+      // Check extension
+      const ext = getFileExtension(filename)
+      if (!ALLOWED_EXTENSIONS.includes(ext)) {
+        skipped.push({ filename, reason: `Unsupported extension: ${ext}` })
+        continue
+      }
+
+      // Check recent modification (skip files modified in last 60 seconds)
+      if (fileStat.mtimeMs > recentCutoff) {
+        skipped.push({ filename, reason: 'Modified in last 60 seconds' })
+        continue
+      }
+
+      // Check if file already registered (by original_filename and size_bytes)
+      const existing = await pool.query(
+        'SELECT id, original_filename, size_bytes FROM models WHERE original_filename = $1 AND size_bytes = $2',
+        [filename, fileStat.size]
+      )
+      if (existing.rows.length > 0) {
+        skipped.push({ filename, reason: 'Already registered' })
+        continue
+      }
+
+      // Create model row
+      let modelResult
+      try {
+        modelResult = await pool.query(
+          `INSERT INTO models (owner_id, name, original_filename, size_bytes, framework, filename)
+           VALUES ($1, $2, $3, $4, $5, '')
+           RETURNING id`,
+          [req.user.sub, path.basename(filename, ext), filename, fileStat.size, ext.replace('.', '')]
+        )
+      } catch (err) {
+        failed.push({ filename, reason: `DB insert failed: ${err.message}` })
+        continue
+      }
+
+      const modelId = modelResult.rows[0].id
+
+      // Move file to storage (same layout as upload: MODEL_STORAGE_PATH/userId/modelId/filename)
+      const userId = req.user.sub
+      const modelDir = path.join(MODEL_STORAGE_PATH, userId, modelId)
+      fs.mkdirSync(modelDir, { recursive: true })
+      const finalPath = path.join(modelDir, filename)
+
+      try {
+        // Try rename first (fast, same filesystem)
+        fs.renameSync(filePath, finalPath)
+      } catch (err) {
+        // Fallback: copy-then-delete (different filesystem)
+        try {
+          fs.copyFileSync(filePath, finalPath)
+          // Verify size
+          const destStat = fs.statSync(finalPath)
+          if (destStat.size !== fileStat.size) {
+            fs.unlinkSync(finalPath)
+            failed.push({ filename, reason: 'Copy size mismatch' })
+            await pool.query('DELETE FROM models WHERE id = $1', [modelId])
+            continue
+          }
+          fs.unlinkSync(filePath)
+        } catch (copyErr) {
+          failed.push({ filename, reason: `Move failed: ${copyErr.message}` })
+          await pool.query('DELETE FROM models WHERE id = $1', [modelId])
+          continue
+        }
+      }
+
+      // Update filename so downloads work
+      await pool.query('UPDATE models SET filename = $1 WHERE id = $2', [filename, modelId])
+
+      imported.push({ filename, modelId })
+    }
+
+    res.json({
+      message: 'Import complete',
+      import_dir: IMPORT_DIR,
+      imported,
+      skipped,
+      failed,
+    })
+  } catch (err) {
+    console.error('Import error:', err)
+    res.status(500).json({ detail: `Import failed: ${err.message}` })
+  }
+})
+
 // ── SPA Fallback ───────────────────────────────────────────────
 
 const publicDir = path.join(__dirname, 'public')
@@ -1060,6 +1223,18 @@ async function start () {
   ensureStorageDir()
   await ensureTables()
   await bootstrapAdmin()
+
+  // Log IMPORT_DIR status
+  if (IMPORT_DIR) {
+    try {
+      fs.statSync(IMPORT_DIR)
+      console.log(`Import directory configured: ${IMPORT_DIR} (exists)`)
+    } catch (err) {
+      console.warn(`Import directory configured but not found: ${IMPORT_DIR}`)
+    }
+  } else {
+    console.log('Import feature disabled (IMPORT_DIR not set)')
+  }
 
   const port = parseInt(process.env.PORT || '3000', 10)
   app.listen(port, () => {

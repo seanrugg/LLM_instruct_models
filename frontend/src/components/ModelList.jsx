@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { modelAPI } from '../api/client'
+import { modelAPI, adminAPI } from '../api/client'
+import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 
 function formatSize(bytes) {
   if (!bytes) return 'Unknown'
@@ -32,6 +34,8 @@ function SkeletonCard() {
 }
 
 export function ModelList() {
+  const { user } = useAuth()
+  const toast = useToast()
   const [models, setModels] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -39,6 +43,7 @@ export function ModelList() {
   const [search, setSearch] = useState('') // Committed search query
   const [loading, setLoading] = useState(true)
   const [searching, setSearching] = useState(false)
+  const [importing, setImporting] = useState(false)
   const navigate = useNavigate()
 
   const loadModels = useCallback(async () => {
@@ -71,6 +76,30 @@ export function ModelList() {
     setQuery(e.target.value)
   }
 
+  const handleImport = async () => {
+    if (!confirm('Import all eligible model files from the server folder? This may take a moment.')) return
+
+    setImporting(true)
+    try {
+      const response = await adminAPI.import()
+      const { imported, skipped, failed } = response.data
+
+      let message = `Import complete: ${imported.length} imported, ${skipped.length} skipped`
+      if (failed.length > 0) {
+        message += `, ${failed.length} failed`
+      }
+      toast.success(message)
+
+      // Reload models to show imported files
+      await loadModels()
+    } catch (err) {
+      const errorMsg = err.response?.data?.detail || 'Import failed'
+      toast.error(errorMsg)
+    } finally {
+      setImporting(false)
+    }
+  }
+
   const totalPages = Math.ceil(total / 12)
 
   return (
@@ -86,9 +115,21 @@ export function ModelList() {
           />
           <button type="submit" className="btn btn-primary">Search</button>
         </form>
-        <button className="btn btn-success" onClick={() => navigate('/upload')}>
-          Upload Model
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {user?.is_admin && (
+            <button
+              className="btn btn-secondary"
+              onClick={handleImport}
+              disabled={importing}
+              title="Import files from server folder"
+            >
+              {importing ? 'Importing...' : 'Import from Server'}
+            </button>
+          )}
+          <button className="btn btn-success" onClick={() => navigate('/upload')}>
+            Upload Model
+          </button>
+        </div>
       </div>
 
       {loading ? (

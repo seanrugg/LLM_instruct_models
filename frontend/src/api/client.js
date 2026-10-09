@@ -70,3 +70,8 @@ export const userAPI = {
   getMe: () => client.get('/users/me'),
   getModels: (userId, params) => client.get(`/users/${userId}/models`, { params }),
 }
+
+// Admin APIs
+export const adminAPI = {
+  import: () => client.post('/admin/import'),
+}

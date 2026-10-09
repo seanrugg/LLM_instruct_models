@@ -173,7 +173,35 @@ After adding Let's Encrypt, in Plesk UI: **Domains → llm.cucorn.com → Hostin
    - Memory pressure during streaming upload
    - Temp-dir permissions on `~/llm-storage/.tmp`
 
-## Step 9: Update routine
+## Step 9: Adding large models via File Manager
+
+For large model files (e.g., 1.7 GB GGUF files), uploading through the browser is slow and unreliable. Use the server-side import feature instead:
+
+1. **Set `IMPORT_DIR`** in the Plesk Node.js tile's environment variables:
+   ```
+   IMPORT_DIR=llm.cucorn.com/llm_files
+   ```
+   The resolved absolute path is shown in the app's startup log and in the import result.
+
+2. **Upload files via Plesk File Manager** to the `llm_files` directory in your domain's root (`llm.cucorn.com/llm_files/`).
+
+3. **Click "Import from Server"** in the app's model list (admin-only button).
+
+4. The app scans `IMPORT_DIR` for files with allowed extensions (`.gguf`, `.pt`, `.pth`, `.safetensors`, `.onnx`, `.tar`, `.zip`, `.gz`, `.bin`), skipping:
+   - Hidden files (starting with `.`)
+   - Non-regular files (directories, symlinks)
+   - Files with unsupported extensions
+   - Files modified in the last 60 seconds (partially uploaded)
+   - Files already registered (matched by `original_filename` and `size_bytes`)
+
+5. For each eligible file:
+   - Creates a model row with `name` = filename without extension
+   - Moves the file from `IMPORT_DIR` to the app's storage layout (`~/llm-storage/<user>/<model-id>/<filename>`)
+   - The move is a fast `fs.rename` (same filesystem), with a copy-then-delete fallback if on different filesystems
+
+**Note:** Imported files are **moved out** of `llm_files` into app storage. They are no longer in the import directory after successful import.
+
+## Step 10: Update routine
 
 In Plesk UI: **Git → Pull updates** (pulls latest code into `/llm-app`).
 
