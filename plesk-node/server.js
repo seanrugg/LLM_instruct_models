@@ -10,7 +10,7 @@ const { promisify } = require('util')
 
 const jwt = require('jsonwebtoken')
 const bcrypt = require('bcryptjs')
-const Busboy = require('busboy')
+const busboy = require('busboy')
 const { Pool } = require('pg')
 
 // ── Configuration ──────────────────────────────────────────────
@@ -811,155 +811,183 @@ app.delete('/api/models/:model_id', requireAuth, async (req, res) => {
 // ── Upload Route (multipart via Busboy) ────────────────────────
 
 app.post('/api/models/:model_id/upload', requireAuth, async (req, res) => {
-  const { model_id } = req.params
-
-  // Check model exists and belongs to user
-  const modelResult = await pool.query(
-    'SELECT * FROM models WHERE id = $1 AND owner_id = $2',
-    [model_id, req.user.sub]
-  )
-  if (modelResult.rows.length === 0) {
-    return res.status(404).json({ detail: 'Model not found' })
-  }
-
-  const model = modelResult.rows[0]
-
-  // Check if file already uploaded (409)
-  if (model.filename) {
-    return res.status(409).json({ detail: 'File already uploaded; create a new model/version instead' })
-  }
-
-  // Parse multipart via Busboy — stream directly to temp file
-  const busboy = new Busboy({ headers: req.headers })
-  let byteCount = 0
-  let originalFilename = 'unknown'
-  let contentType = 'application/octet-stream'
-  let storedFilename = ''
   let tempPath = ''
-  let writeStream = null
-  let errorSent = false
-  let uploadDone = false
-  let hash = crypto.createHash('sha256')
+  let createdModelId = null
 
-  busboy.on('file', async (fieldname, fileStream, info) => {
-    if (fieldname !== 'file') {
-      fileStream.resume() // drain
-      return
-    }
+  try {
+    const { model_id } = req.params
 
-    originalFilename = sanitizeFilename(info.filename)
-    contentType = info.contentType || 'application/octet-stream'
-
-    const fileExt = getFileExtension(originalFilename)
-    if (fileExt && !ALLOWED_EXTENSIONS.includes(fileExt)) {
-      if (!errorSent) {
-        errorSent = true
-        fileStream.resume()
-        return res.status(400).json({
-          detail: `File type not allowed. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`,
-        })
-      }
-      fileStream.resume()
-      return
-    }
-
-    // Create temp file and stream writer
-    const temp = await openTemp(req.user.sub, model_id, originalFilename)
-    tempPath = temp.tempPath
-    storedFilename = temp.storedFilename
-    writeStream = fs.createWriteStream(tempPath)
-
-    fileStream.pipe(writeStream)
-
-    fileStream.on('data', (chunk) => {
-      byteCount += chunk.length
-      hash.update(chunk)
-
-      if (byteCount > MAX_UPLOAD_BYTES) {
-        fileStream.destroy()
-        writeStream.destroy()
-        try { fs.unlinkSync(tempPath) } catch (_) { /* ignore */ }
-        if (!errorSent) {
-          errorSent = true
-          uploadDone = true
-          res.status(413).json({
-            detail: `File too large. Maximum size: ${MAX_UPLOAD_SIZE_MB}MB`,
-          })
-        }
-      }
-    })
-
-    fileStream.on('error', () => {
-      writeStream.destroy()
-      try { fs.unlinkSync(tempPath) } catch (_) { /* ignore */ }
-      if (!errorSent && !uploadDone) {
-        errorSent = true
-        res.status(500).json({ detail: 'Upload failed' })
-      }
-    })
-  })
-
-  busboy.on('finish', async () => {
-    if (uploadDone || errorSent) return
-
-    if (byteCount === 0) {
-      return res.status(400).json({ detail: 'Empty file' })
-    }
-
-    // Wait for write stream to finish
-    await new Promise((resolve, reject) => {
-      writeStream.on('finish', resolve)
-      writeStream.on('error', reject)
-      writeStream.end()
-    })
-
-    // Compute SHA-256
-    const sha256 = hash.digest('hex')
-
-    // Commit temp file to final location
-    const finalFilename = commitTemp(tempPath, req.user.sub, model_id, storedFilename)
-
-    // Delete old file if model already had one
-    if (model.filename) {
-      deleteFile(req.user.sub, model_id, model.filename)
-    }
-
-    // Extract metadata from file
-    const filePath = getFilePath(req.user.sub, model_id, finalFilename)
-    const extracted = await extractMetadataFromFile(filePath, originalFilename)
-
-    // Single UPDATE for all fields
-    await pool.query(
-      `UPDATE models SET
-        filename = $1, original_filename = $2, content_type = $3, size_bytes = $4,
-        sha256 = $5, file_format = $6, architecture = $7, parameter_count = $8,
-        quantization = $9, context_length = $10, chat_template = $11, license = $12,
-        source_model_name = $13, file_metadata = $14, framework = $15,
-        metadata_extracted_at = NOW(), updated_at = NOW()
-       WHERE id = $16`,
-      [
-        finalFilename, originalFilename, contentType, byteCount,
-        sha256, extracted.file_format, extracted.architecture, extracted.parameter_count,
-        extracted.quantization, extracted.context_length, extracted.chat_template, extracted.license,
-        extracted.source_model_name, extracted.file_metadata || '{}', extracted.file_format,
-        model_id,
-      ]
+    // Check model exists and belongs to user
+    const modelResult = await pool.query(
+      'SELECT * FROM models WHERE id = $1 AND owner_id = $2',
+      [model_id, req.user.sub]
     )
-
-    // Fetch updated model to return full response
-    const updated = await pool.query('SELECT * FROM models WHERE id = $1', [model_id])
-    res.json(rowToModelResponse(updated.rows[0]))
-  })
-
-  busboy.on('error', (err) => {
-    console.error('Busboy error:', err)
-    if (!errorSent && !uploadDone) {
-      errorSent = true
-      res.status(500).json({ detail: 'Upload failed: ' + err.message })
+    if (modelResult.rows.length === 0) {
+      return res.status(404).json({ detail: 'Model not found' })
     }
-  })
 
-  req.pipe(busboy)
+    const model = modelResult.rows[0]
+
+    // Check if file already uploaded (409)
+    if (model.filename) {
+      return res.status(409).json({ detail: 'File already uploaded; create a new model/version instead' })
+    }
+
+    // Ensure temp directory exists
+    fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true })
+
+    // Parse multipart via Busboy — stream directly to temp file
+    const bb = busboy({ headers: req.headers })
+    let byteCount = 0
+    let originalFilename = 'unknown'
+    let contentType = 'application/octet-stream'
+    let storedFilename = ''
+    let writeStream = null
+    let errorSent = false
+    let uploadDone = false
+    let hash = crypto.createHash('sha256')
+
+    const sendError = (status, detail) => {
+      if (errorSent || uploadDone) return
+      errorSent = true
+      // Clean up temp file
+      if (tempPath) {
+        try { fs.unlinkSync(tempPath) } catch (_) { /* ignore */ }
+      }
+      res.status(status).json({ detail })
+    }
+
+    bb.on('file', async (fieldname, fileStream, info) => {
+      try {
+        if (fieldname !== 'file') {
+          fileStream.resume() // drain
+          return
+        }
+
+        originalFilename = sanitizeFilename(info.filename)
+        contentType = info.contentType || 'application/octet-stream'
+
+        const fileExt = getFileExtension(originalFilename)
+        if (fileExt && !ALLOWED_EXTENSIONS.includes(fileExt)) {
+          sendError(400, `File type not allowed. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`)
+          fileStream.resume()
+          return
+        }
+
+        // Create temp file and stream writer
+        const temp = await openTemp(req.user.sub, model_id, originalFilename)
+        tempPath = temp.tempPath
+        storedFilename = temp.storedFilename
+        writeStream = fs.createWriteStream(tempPath)
+
+        fileStream.pipe(writeStream)
+
+        fileStream.on('data', (chunk) => {
+          byteCount += chunk.length
+          hash.update(chunk)
+
+          if (byteCount > MAX_UPLOAD_BYTES) {
+            fileStream.destroy()
+            writeStream.destroy()
+            sendError(413, 'File too large. Maximum size: ' + MAX_UPLOAD_SIZE_MB + 'MB')
+          }
+        })
+
+        fileStream.on('error', (err) => {
+          if (writeStream) writeStream.destroy()
+          sendError(500, 'Upload failed: ' + (err.message || 'Unknown error'))
+        })
+
+        writeStream.on('error', (err) => {
+          sendError(500, 'Upload failed: ' + (err.message || 'Unknown error'))
+        })
+      } catch (err) {
+        console.error('Busboy file handler error:', err)
+        sendError(500, 'Upload failed: ' + (err.message || 'Unknown error'))
+      }
+    })
+
+    bb.on('finish', async () => {
+      if (uploadDone || errorSent) return
+
+      if (byteCount === 0) {
+        sendError(400, 'Empty file')
+        return
+      }
+
+      try {
+        // Wait for write stream to finish
+        await new Promise((resolve, reject) => {
+          writeStream.on('finish', resolve)
+          writeStream.on('error', reject)
+          writeStream.end()
+        })
+
+        // Compute SHA-256
+        const sha256 = hash.digest('hex')
+
+        // Commit temp file to final location
+        const finalFilename = commitTemp(tempPath, req.user.sub, model_id, storedFilename)
+
+        // Delete old file if model already had one
+        if (model.filename) {
+          deleteFile(req.user.sub, model_id, model.filename)
+        }
+
+        // Extract metadata from file
+        const filePath = getFilePath(req.user.sub, model_id, finalFilename)
+        const extracted = await extractMetadataFromFile(filePath, originalFilename)
+
+        // Single UPDATE for all fields
+        await pool.query(
+          `UPDATE models SET
+            filename = $1, original_filename = $2, content_type = $3, size_bytes = $4,
+            sha256 = $5, file_format = $6, architecture = $7, parameter_count = $8,
+            quantization = $9, context_length = $10, chat_template = $11, license = $12,
+            source_model_name = $13, file_metadata = $14, framework = $15,
+            metadata_extracted_at = NOW(), updated_at = NOW()
+           WHERE id = $16`,
+          [
+            finalFilename, originalFilename, contentType, byteCount,
+            sha256, extracted.file_format, extracted.architecture, extracted.parameter_count,
+            extracted.quantization, extracted.context_length, extracted.chat_template, extracted.license,
+            extracted.source_model_name, extracted.file_metadata || '{}', extracted.file_format,
+            model_id,
+          ]
+        )
+
+        // Fetch updated model to return full response
+        const updated = await pool.query('SELECT * FROM models WHERE id = $1', [model_id])
+        res.json(rowToModelResponse(updated.rows[0]))
+      } catch (err) {
+        console.error('Upload processing error:', err)
+        sendError(500, 'Upload failed: ' + (err.message || 'Unknown error'))
+      }
+    })
+
+    bb.on('error', (err) => {
+      console.error('Busboy error:', err)
+      sendError(500, 'Upload failed: ' + (err.message || 'Unknown error'))
+    })
+
+    req.pipe(bb)
+  } catch (err) {
+    console.error('Upload route error:', err)
+    // Clean up temp file if it exists
+    if (tempPath) {
+      try { fs.unlinkSync(tempPath) } catch (_) { /* ignore */ }
+    }
+    // Delete orphan model if it was created
+    if (createdModelId) {
+      try {
+        await pool.query('DELETE FROM models WHERE id = $1', [createdModelId])
+        // Also delete the model directory
+        const modelDir = path.join(MODEL_STORAGE_PATH, req.user.sub, createdModelId)
+        try { fs.rmSync(modelDir, { recursive: true, force: true }) } catch (_) { /* ignore */ }
+      } catch (_) { /* ignore */ }
+    }
+    res.status(500).json({ detail: 'Upload failed: ' + (err.message || 'Unknown error') })
+  }
 })
 
 // ── Download Token Route ───────────────────────────────────────

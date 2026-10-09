@@ -241,11 +241,17 @@ export function UploadModel() {
 
       let errorMessage = 'Upload failed'
       if (err.response?.status === 413) {
-        errorMessage = 'File too large. Maximum size: 50GB'
+        // 413 can come from the app (size limit) or the proxy (nginx/apache limit)
+        const detail = err.response.data?.detail
+        if (detail && detail.includes('Maximum size')) {
+          errorMessage = detail
+        } else {
+          errorMessage = 'Rejected by the web server as too large (proxy limit)'
+        }
       } else if (err.response?.status === 409) {
         errorMessage = 'A file has already been uploaded for this model. Create a new model or version instead.'
       } else if (err.response?.status === 400) {
-        errorMessage = 'Upload failed: ' + (err.response?.data?.detail || 'Invalid file')
+        errorMessage = 'Upload failed: ' + (err.response.data?.detail || 'Invalid file')
       } else if (err.response?.status === 401) {
         errorMessage = 'Session expired. Please log in again.'
       } else if (err.response) {

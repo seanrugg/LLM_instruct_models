@@ -145,6 +145,24 @@ Click **Apply** or **Save**.
 
 **Do NOT add** a `location /api/` block — Passenger handles routing to the Node.js app. Adding a competing `/api/` block in Plesk nginx will conflict.
 
+### 6.2 Apache request body limit
+
+In Plesk UI: **Domains → llm.cucorn.com → Apache & Nginx Settings → Additional Apache Directives**:
+
+For **HTTP** (port 80):
+```
+LimitRequestBody 0
+```
+
+For **HTTPS** (port 443):
+```
+LimitRequestBody 0
+```
+
+Click **Apply** or **Save**.
+
+This removes the Apache request body size limit (default 1 GiB on Apache 2.4.53+), allowing large file uploads to reach the Node.js app. Without this, uploads over ~1 GiB will return 413 from Apache before reaching the app.
+
 ### 6.2 Proxy mode
 
 Leave Plesk's **Proxy mode** at its default (On). Passenger manages its own upstream.
