@@ -18,7 +18,7 @@ client.interceptors.request.use((config) => {
 // Track if an upload is in progress (don't redirect during upload)
 let uploadInProgress = false
 
-// Handle 401 responses
+// Handle 401 responses (session expired)
 client.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -56,7 +56,6 @@ export const modelAPI = {
     const formData = new FormData()
     formData.append('file', file)
     return client.post(`/models/${id}/upload`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 0, // No timeout for large file uploads
       onUploadProgress: config.onUploadProgress, // Pass through caller's progress callback
     })

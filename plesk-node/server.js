@@ -344,14 +344,6 @@ function requireAuth (req, res, next) {
   next()
 }
 
-async function getUserFromToken (token) {
-  const payload = decodeAccessToken(token)
-  if (!payload || !payload.sub) return null
-
-  const result = await pool.query('SELECT * FROM users WHERE id = $1', [payload.sub])
-  return result.rows[0] || null
-}
-
 // ── Health ─────────────────────────────────────────────────────
 
 app.get('/health', (req, res) => {
@@ -429,16 +421,16 @@ app.post('/api/auth/login', async (req, res) => {
 // ── User Routes ────────────────────────────────────────────────
 
 app.get('/api/users/me', requireAuth, async (req, res) => {
-  const user = await getUserFromToken(req.headers.authorization)
-  if (!user) {
+  const user = await pool.query('SELECT * FROM users WHERE id = $1', [req.user.sub])
+  if (user.rows.length === 0) {
     return res.status(401).json({ detail: 'User no longer exists' })
   }
   res.json({
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    is_admin: user.is_admin,
-    created_at: user.created_at,
+    id: user.rows[0].id,
+    username: user.rows[0].username,
+    email: user.rows[0].email,
+    is_admin: user.rows[0].is_admin,
+    created_at: user.rows[0].created_at,
   })
 })
 

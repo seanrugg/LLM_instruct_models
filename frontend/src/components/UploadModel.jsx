@@ -189,7 +189,8 @@ export function UploadModel() {
           navigate('/login')
           return
         }
-        // Other errors are non-fatal; continue
+        // Other errors (network, 500, etc.) are non-fatal; continue with upload
+        console.warn('Session check failed:', err.response?.status || err.message)
       }
 
       // Create model
@@ -245,8 +246,14 @@ export function UploadModel() {
         errorMessage = 'A file has already been uploaded for this model. Create a new model or version instead.'
       } else if (err.response?.status === 400) {
         errorMessage = 'Upload failed: ' + (err.response?.data?.detail || 'Invalid file')
+      } else if (err.response?.status === 401) {
+        errorMessage = 'Session expired. Please log in again.'
+      } else if (err.response) {
+        // 400, 413, 422, 500, etc. — show the real error
+        errorMessage = err.response.data?.detail || `Upload failed (${err.response.status})`
       } else {
-        errorMessage = err.response?.data?.detail || 'Upload failed'
+        // Network error or other failure
+        errorMessage = err.message || 'Upload failed (network error)'
       }
       setError(errorMessage)
       toast.error(errorMessage)

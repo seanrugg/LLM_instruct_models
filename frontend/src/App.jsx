@@ -27,9 +27,11 @@ function Header() {
         <Link to="/" className={location.pathname === '/' ? 'active' : ''}>
           Browse
         </Link>
-        <Link to="/upload" className={location.pathname === '/upload' ? 'active' : ''}>
-          Upload
-        </Link>
+        {user && (
+          <Link to="/upload" className={location.pathname === '/upload' ? 'active' : ''}>
+            Upload
+          </Link>
+        )}
         {!user && !allowRegistration && (
           <span style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
             Contact admin for account
